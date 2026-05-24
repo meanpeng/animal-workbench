@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import csv
+import os
+import platform
 import json
 import shutil
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -150,18 +153,25 @@ def run_training_job(conn: sqlite3.Connection, job_id: int, paths: AppPaths | No
             (job_id,),
         )
         conn.commit()
-        model_name = params.get("base_model_path") or "yolo26n.pt"
+        model_name = _training_model_source(conn, params) or "yolo11n.pt"
         model = YOLO(model_name)
-        results = model.train(
-            data=str(yaml_path),
-            epochs=int(params["epochs"]),
-            imgsz=int(params["image_size"]),
-            batch=int(params["batch_size"]),
-            device=params["device"],
-            project=str(paths.runtime_dir / "runs"),
-            name=f"job_{job_id}",
-            exist_ok=True,
-        )
+        train_args: dict[str, Any] = {
+            "data": str(yaml_path),
+            "epochs": int(params["epochs"]),
+            "imgsz": int(params["image_size"]),
+            "batch": int(params["batch_size"]),
+            "device": params["device"],
+            "project": str(paths.runtime_dir / "runs"),
+            "name": f"job_{job_id}",
+            "exist_ok": True,
+        }
+        if params.get("mode") == "resume":
+            train_args["resume"] = True
+        else:
+            freeze_layers = int(params.get("advanced", {}).get("freeze_layers") or 0)
+            if freeze_layers > 0:
+                train_args["freeze"] = freeze_layers
+        results = model.train(**train_args)
         run_dir = Path(getattr(results, "save_dir", paths.runtime_dir / "runs" / f"job_{job_id}"))
         model_id = register_completed_training(conn, job_id, run_dir)
         conn.execute(
@@ -238,3 +248,200 @@ def _coerce_metric(value: str) -> float | str:
         return float(value)
     except (TypeError, ValueError):
         return value
+
+
+def _training_model_source(conn: sqlite3.Connection, params: dict[str, Any]) -> str | None:
+    if params.get("mode") == "resume":
+        checkpoint_path = params.get("checkpoint_path")
+        if checkpoint_path:
+            return str(checkpoint_path)
+        resume_job_id = params.get("resume_job_id")
+        if resume_job_id:
+            row = conn.execute(
+                """
+                SELECT artifact_refs
+                FROM experiments
+                WHERE training_job_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (int(resume_job_id),),
+            ).fetchone()
+            refs = json_loads(row["artifact_refs"], {}) if row else {}
+            run_dir = Path(refs.get("run_dir", ""))
+            last_path = run_dir / "weights" / "last.pt"
+            if last_path.exists():
+                return str(last_path)
+
+    base_model_path = params.get("base_model_path")
+    if base_model_path:
+        return str(base_model_path)
+    base_model_id = params.get("base_model_id")
+    if base_model_id:
+        row = conn.execute(
+            "SELECT internal_weight_path FROM models WHERE id = ?",
+            (int(base_model_id),),
+        ).fetchone()
+        if row and row["internal_weight_path"]:
+            return str(row["internal_weight_path"])
+    return None
+
+
+def device_status() -> dict[str, Any]:
+    memory = _system_memory()
+    status: dict[str, Any] = {
+        "cpu": {
+            "name": platform.processor() or platform.machine() or "CPU",
+            "cores": os.cpu_count() or 0,
+        },
+        "memory": memory,
+        "python": sys.version.split()[0],
+        "cuda_available": False,
+        "torch_available": False,
+        "ultralytics_available": False,
+        "gpus": [],
+    }
+
+    try:
+        import torch
+
+        status["torch_available"] = True
+        status["cuda_available"] = bool(torch.cuda.is_available())
+        if torch.cuda.is_available():
+            gpus = []
+            for index in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(index)
+                allocated = int(torch.cuda.memory_allocated(index))
+                reserved = int(torch.cuda.memory_reserved(index))
+                gpus.append(
+                    {
+                        "index": index,
+                        "name": props.name,
+                        "total_memory": int(props.total_memory),
+                        "allocated_memory": allocated,
+                        "reserved_memory": reserved,
+                    }
+                )
+            status["gpus"] = gpus
+    except Exception as exc:
+        status["torch_error"] = str(exc)
+
+    try:
+        import ultralytics  # noqa: F401
+
+        status["ultralytics_available"] = True
+    except Exception as exc:
+        status["ultralytics_error"] = str(exc)
+
+    if not status["gpus"]:
+        status["gpus"] = _nvidia_smi_gpus()
+    return status
+
+
+def profile_model(conn: sqlite3.Connection, model_id: int | None = None, model_path: str | None = None) -> dict[str, Any]:
+    source = model_path
+    model_name = model_path
+    if model_id:
+        row = conn.execute("SELECT name, internal_weight_path FROM models WHERE id = ?", (model_id,)).fetchone()
+        if row:
+            model_name = row["name"]
+            source = row["internal_weight_path"]
+    source = source or "yolo11n.pt"
+
+    try:
+        from ultralytics import YOLO
+
+        yolo = YOLO(str(source))
+        module = yolo.model
+        layers = getattr(module, "model", None)
+        layer_count = len(layers) if layers is not None else len(list(module.modules()))
+        total_params = sum(parameter.numel() for parameter in module.parameters())
+        trainable_params = sum(parameter.numel() for parameter in module.parameters() if parameter.requires_grad)
+        return {
+            "ok": True,
+            "name": model_name or str(source),
+            "source": str(source),
+            "model_type": yolo.task or "detect",
+            "layer_count": int(layer_count),
+            "parameters": int(total_params),
+            "trainable_parameters": int(trainable_params),
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "name": model_name or str(source),
+            "source": str(source),
+            "model_type": "unknown",
+            "layer_count": None,
+            "parameters": None,
+            "trainable_parameters": None,
+            "error": str(exc),
+        }
+
+
+def _system_memory() -> dict[str, int | None]:
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = MemoryStatus()
+            stat.dwLength = ctypes.sizeof(MemoryStatus)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+            return {
+                "total": int(stat.ullTotalPhys),
+                "available": int(stat.ullAvailPhys),
+                "used": int(stat.ullTotalPhys - stat.ullAvailPhys),
+                "percent": int(stat.dwMemoryLoad),
+            }
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        total = int(pages * page_size)
+        return {"total": total, "available": None, "used": None, "percent": None}
+    except Exception:
+        return {"total": None, "available": None, "used": None, "percent": None}
+
+
+def _nvidia_smi_gpus() -> list[dict[str, Any]]:
+    try:
+        output = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,memory.total,memory.used,memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+            timeout=3,
+        )
+    except Exception:
+        return []
+
+    gpus = []
+    for line in output.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) != 5:
+            continue
+        index, name, total, used, free = parts
+        gpus.append(
+            {
+                "index": int(index),
+                "name": name,
+                "total_memory": int(total) * 1024 * 1024,
+                "used_memory": int(used) * 1024 * 1024,
+                "free_memory": int(free) * 1024 * 1024,
+            }
+        )
+    return gpus

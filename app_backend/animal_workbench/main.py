@@ -24,6 +24,7 @@ from .schemas import (
     DatasetFolderImportRequest,
     DatasetMediaAdd,
     MediaImportRequest,
+    ModelProfileRequest,
     ProjectCreate,
     PublicDatasetJobRequest,
     TrainingJobCreate,
@@ -35,7 +36,7 @@ from .services.media import import_media
 from .services.public_catalog import list_public_dataset_statuses, public_spec
 from .services.public_downloads import prepare_public_dataset
 from .services.public_import import import_public_dataset
-from .services.training import create_training_job, run_training_job
+from .services.training import create_training_job, device_status, profile_model, run_training_job
 
 
 @asynccontextmanager
@@ -54,7 +55,7 @@ def _cleanup_stale_jobs() -> None:
     interrupted_message = "应用意外关闭，任务中断"
 
     with connect() as conn:
-        # ── dataset_jobs ──
+        # Dataset jobs.
         rows = conn.execute(
             f"""
             SELECT id FROM dataset_jobs
@@ -77,7 +78,7 @@ def _cleanup_stale_jobs() -> None:
                 (interrupted_message, interrupted_message, job_id),
             )
 
-        # ── training_jobs ──
+        # Training jobs.
         rows = conn.execute(
             f"""
             SELECT id FROM training_jobs
@@ -276,7 +277,7 @@ async def dataset_job_events(job_id: int) -> StreamingResponse:
                 return
             await asyncio.sleep(1)
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(event_stream(), media_type="text/event-stream; charset=utf-8")
 
 
 @app.post("/dataset-jobs/import-folder")
@@ -401,7 +402,7 @@ def list_media(limit: int = 200, offset: int = 0) -> list[dict]:
 
 @app.post("/media/cleanup-orphans")
 def cleanup_orphan_media() -> dict:
-    """删除所有未被任何数据集引用的媒体素材（文件 + 数据库记录）。"""
+    """Delete media files and rows that are not referenced by any dataset."""
     import os
     with connect() as conn:
         project_id = current_project_id(conn)
@@ -799,7 +800,7 @@ def dataset_media(
 
         where_clause = " AND ".join(conditions)
 
-        # ── count ──────────────────────────────────────────────
+        # Count matching media rows.
         count_row = conn.execute(
             f"""
             SELECT COUNT(*) AS cnt
@@ -811,7 +812,7 @@ def dataset_media(
         ).fetchone()
         total = int(count_row["cnt"])
 
-        # ── paginated rows ────────────────────────────────────
+        # Fetch the current page.
         rows = rows_to_dicts(
             conn.execute(
                 f"""
@@ -828,7 +829,7 @@ def dataset_media(
             )
         )
 
-        # ── batch queries for annotation counts and class names ─
+        # Batch annotation counts and class names.
         media_ids = [row["id"] for row in rows]
         ann_count_map: dict[int, int] = {}
         class_names_map: dict[int, list[str]] = {}
@@ -1234,6 +1235,25 @@ def create_training_job_endpoint(payload: TrainingJobCreate, background_tasks: B
         job = create_training_job(conn, project_id, payload.dataset_id, payload.name, params)
         background_tasks.add_task(run_job_background, job["id"])
         return job
+
+
+@app.get("/training/device-status")
+def training_device_status() -> dict:
+    return device_status()
+
+
+@app.post("/training/model-profile")
+def training_model_profile(payload: ModelProfileRequest) -> dict:
+    with connect() as conn:
+        project_id = current_project_id(conn)
+        if payload.model_id:
+            model = conn.execute(
+                "SELECT id FROM models WHERE id = ? AND project_id = ?",
+                (payload.model_id, project_id),
+            ).fetchone()
+            if not model:
+                raise HTTPException(status_code=404, detail="Model not found.")
+        return profile_model(conn, model_id=payload.model_id, model_path=payload.model_path)
 
 
 @app.get("/training-jobs")

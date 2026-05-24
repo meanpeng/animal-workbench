@@ -14,10 +14,10 @@ def extract_video_frames(
     output_dir: Path | None = None,
     base_name: str | None = None,
 ) -> list[Path]:
-    """从视频中均匀抽帧，最多 MAX_FRAMES 帧，保存为 JPEG。
+    """Extract evenly spaced JPEG frames, capped at MAX_FRAMES.
 
-    如果视频时长对应的 1fps 帧数超过 MAX_FRAMES，则动态增大间隔
-    使总帧数恰好 ≤ MAX_FRAMES 且均匀分布。
+    The default cadence is about 1 fps. Longer videos increase the interval so
+    the saved frames stay under the cap while remaining evenly distributed.
     """
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -31,18 +31,18 @@ def extract_video_frames(
         if fps <= 0 or total_frames <= 0:
             return []
 
-        # 按 1fps 计算需要的帧数
+        # Estimate the number of frames needed at 1 fps.
         duration_sec = total_frames / fps
-        needed = int(duration_sec)  # 每秒 1 帧
+        needed = int(duration_sec)
 
         if needed <= 0:
             return []
 
-        # 超过 MAX_FRAMES 则增大间隔
+        # Increase the interval when the 1 fps estimate exceeds the cap.
         if needed > MAX_FRAMES:
             interval_frames = int(total_frames / MAX_FRAMES)
         else:
-            interval_frames = int(fps)  # 1fps ≈ 每隔 fps 帧取一帧
+            interval_frames = int(fps)
 
         if interval_frames < 1:
             interval_frames = 1

@@ -5,8 +5,10 @@ import type {
   DatasetJob,
   Dataset,
   DatasetDetail,
+  DeviceStatus,
   Experiment,
   MediaAsset,
+  ModelProfile,
   ModelItem,
   PublicDataset,
   Summary,
@@ -120,6 +122,12 @@ export const api = {
   ).toString()}`),
   batches: () => request<AnnotationBatch[]>("/annotation-batches"),
   jobs: () => request<TrainingJob[]>("/training-jobs"),
+  trainingDeviceStatus: () => request<DeviceStatus>("/training/device-status"),
+  modelProfile: (payload: { model_id?: number; model_path?: string }) =>
+    request<ModelProfile>("/training/model-profile", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   createTrainingJob: (payload: {
     dataset_id: number;
     name: string;
@@ -127,8 +135,21 @@ export const api = {
     image_size: number;
     batch_size: number;
     device: string;
-    mode: "baseline" | "finetune" | "resume";
+    mode: "train" | "resume";
+    base_model_id?: number;
+    base_model_path?: string;
+    resume_job_id?: number;
+    checkpoint_path?: string;
     run_yolo: boolean;
+    advanced?: {
+      freeze_layers?: number;
+      lr0?: number;
+      patience?: number;
+      seed?: number;
+      workers?: number;
+      cache?: boolean;
+      augment?: boolean;
+    };
   }) =>
     request<TrainingJob>("/training-jobs", {
       method: "POST",

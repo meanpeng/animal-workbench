@@ -84,7 +84,7 @@ def materialize_lote(root: Path, output: Path, limit: int | None, reporter: JobR
     with ZipFile(json_zip) as ann_zip, ZipFile(wild_zip) as image_zip:
         ann_members = [name for name in ann_zip.namelist() if name.endswith(".json") and "annotations" in name]
         categories = None
-        # Phase 1: 解析标注并读取图片数据（在主线程读 zip，线程安全）
+        # Phase 1: Parse annotations and read image data in the main thread.
         write_tasks: list[tuple[Path, bytes, Path, str]] = []  # (target_image, image_bytes, target_label, label_text)
         for ann_member in ann_members:
             split = split_from_name(ann_member)
@@ -111,7 +111,7 @@ def materialize_lote(root: Path, output: Path, limit: int | None, reporter: JobR
                         lines.append(f"{class_id} {box[0]:.6f} {box[1]:.6f} {box[2]:.6f} {box[3]:.6f}")
                 write_tasks.append((target_image, image_bytes, target_label, "\n".join(lines)))
 
-        # Phase 2: 并行写入文件
+        # Phase 2: Write files in parallel.
         def _write_task(task: tuple[Path, bytes, Path, str]) -> None:
             target_image, image_bytes, target_label, label_text = task
             target_image.parent.mkdir(parents=True, exist_ok=True)
@@ -144,7 +144,7 @@ def materialize_ena24(root: Path, output: Path, limit: int | None, reporter: Job
     reset_yolo(output)
     rng = random.Random(42)
 
-    # Phase 1: 解析 parquet 并构建写入任务
+    # Phase 1: Parse parquet data and build write tasks.
     write_tasks: list[tuple[Path, bytes, Path, str]] = []
     for parquet_path in parquet_files:
         rows = pq.read_table(parquet_path).to_pylist()
@@ -173,7 +173,7 @@ def materialize_ena24(root: Path, output: Path, limit: int | None, reporter: Job
         if limit is not None and len(write_tasks) >= limit:
             break
 
-    # Phase 2: 并行写入文件
+    # Phase 2: Write files in parallel.
     def _write_task(task: tuple[Path, bytes, Path, str]) -> None:
         target_image, image_bytes, target_label, label_text = task
         target_image.parent.mkdir(parents=True, exist_ok=True)
@@ -213,7 +213,7 @@ def materialize_lila(root: Path, output: Path, limit: int | None, reporter: JobR
     if limit is not None:
         images = images[:limit]
 
-    # Phase 1: 并行下载/查找图片
+    # Phase 1: Download or locate images in parallel.
     def _fetch_image(image: dict) -> tuple[dict, Path | None]:
         file_name = str(image.get("file_name") or f"{image['id']}.jpg")
         return image, find_or_download_lila_image(root, image_base, file_name)
@@ -232,7 +232,7 @@ def materialize_lila(root: Path, output: Path, limit: int | None, reporter: JobR
             if done % 25 == 0 or done == total:
                 reporter.update(stage="parsing", percent=10, current=done, total=total, message=f"已下载/查找 {done}/{total} 张公开图片")
 
-    # Phase 2: 生成标注文本
+    # Phase 2: Generate label text.
     write_tasks: list[tuple[Path, bytes, Path, str]] = []
     for image, raw_image in fetched:
         if raw_image is None:
@@ -253,7 +253,7 @@ def materialize_lila(root: Path, output: Path, limit: int | None, reporter: JobR
                 lines.append(f"{class_to_id[category_name]} {box[0]:.6f} {box[1]:.6f} {box[2]:.6f} {box[3]:.6f}")
         write_tasks.append((target_image, image_bytes, target_label, "\n".join(lines)))
 
-    # Phase 3: 并行写入文件
+    # Phase 3: Write files in parallel.
     def _write_task(task: tuple[Path, bytes, Path, str]) -> None:
         target_image, image_bytes, target_label, label_text = task
         target_image.parent.mkdir(parents=True, exist_ok=True)

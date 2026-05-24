@@ -4,6 +4,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+$OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
 if ((Test-Path $cargoBin) -and ($env:PATH -notlike "*$cargoBin*")) {

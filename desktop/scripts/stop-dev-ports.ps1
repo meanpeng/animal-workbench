@@ -1,4 +1,7 @@
 $ErrorActionPreference = "Stop"
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+$OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 $ports = @(5173, 8765)
 $desktopRoot = Resolve-Path (Join-Path $PSScriptRoot "..")

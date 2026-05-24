@@ -130,13 +130,13 @@ def _batch_import_media_assets(
     items: list[tuple[Path, str, str | None]],
     paths: AppPaths,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """并行计算哈希 + 复制文件，顺序写入数据库。返回 (imported, skipped)。"""
+    """Hash and copy files in parallel, then write database rows sequentially."""
     if not items:
         return [], []
 
     workers = max(1, min(8, len(items)))
 
-    # Phase 1: 并行计算 SHA256
+    # Phase 1: Compute SHA256 hashes in parallel.
     def _hash(item: tuple[Path, str, str | None]) -> tuple[Path, str, str | None, str | None]:
         path, kind, orig = item
         try:
@@ -148,7 +148,7 @@ def _batch_import_media_assets(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         hashed = list(pool.map(_hash, items))
 
-    # Phase 2: 查库去重
+    # Phase 2: Check the database for duplicates.
     imported: list[dict[str, Any]] = []
     skipped: list[str] = []
     checksum_to_asset: dict[str, dict[str, Any]] = {}
@@ -172,7 +172,7 @@ def _batch_import_media_assets(
         else:
             to_prepare.append((path, kind, orig_name, checksum))
 
-    # Phase 3: 并行复制文件 + 获取尺寸
+    # Phase 3: Copy files and read dimensions in parallel.
     def _prepare(item: tuple[Path, str, str | None, str]) -> tuple[Path, str, str | None, str, str, int | None, int | None, str] | None:
         path, kind, orig_name, checksum = item
         try:
@@ -195,7 +195,7 @@ def _batch_import_media_assets(
                 else:
                     skipped.append(str(item[0]))
 
-    # Phase 4: 顺序写入数据库
+    # Phase 4: Write database rows sequentially.
     for path, kind, orig_name, checksum, suffix, width, height, internal_path in prepared:
         cursor = conn.execute(
             """
@@ -231,7 +231,7 @@ def import_media(
     image_files = [f for f in files if f.suffix.lower() in IMAGE_EXTENSIONS]
     video_files = [f for f in files if f.suffix.lower() in VIDEO_EXTENSIONS]
 
-    # 并行抽帧
+    # Extract frames in parallel.
     frame_paths: list[Path] = []
     if extract_frames and video_files:
         all_frames: dict[Path, list[Path]] = {}
@@ -253,7 +253,7 @@ def import_media(
         for vf in video_files:
             skipped.append(str(vf))
 
-    # 构建批量导入列表
+    # Build the bulk import list.
     items: list[tuple[Path, str, str | None]] = []
     for path in image_files:
         items.append((path, "imported", None))

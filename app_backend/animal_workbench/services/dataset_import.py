@@ -80,14 +80,14 @@ def _batch_register_media_assets(
     progress_base: float = 15,
     progress_range: float = 55,
 ) -> dict[Path, dict[str, Any]]:
-    """并行计算哈希 + 复制文件，顺序写入数据库。返回 {source_path: asset_dict}。"""
+    """Hash and copy files in parallel, then return assets by source path."""
     if not items:
         return {}
 
     total = len(items)
     workers = max(1, min(8, total))
 
-    # Phase 1: 并行计算 SHA256 哈希
+    # Phase 1: Compute SHA256 hashes in parallel.
     def _hash(item: tuple[Path, str]) -> tuple[Path, str, str | None]:
         path, kind = item
         try:
@@ -110,7 +110,7 @@ def _batch_register_media_assets(
                     message=f"已计算文件哈希 {done}/{total}",
                 )
 
-    # Phase 2: 查库去重（DB 读顺序执行，速度很快）
+    # Phase 2: Check the database for duplicates.
     path_to_asset: dict[Path, dict[str, Any]] = {}
     checksum_to_asset: dict[str, dict[str, Any]] = {}
     to_prepare: list[tuple[Path, str, str]] = []
@@ -132,7 +132,7 @@ def _batch_register_media_assets(
         else:
             to_prepare.append((path, source_kind, checksum))
 
-    # Phase 3: 并行复制文件 + 获取尺寸
+    # Phase 3: Copy files and read dimensions in parallel.
     def _prepare(item: tuple[Path, str, str]) -> tuple[Path, str, str, str, int | None, int | None, str] | None:
         path, source_kind, checksum = item
         try:
@@ -165,7 +165,7 @@ def _batch_register_media_assets(
                         message=f"已复制文件 {done}/{prep_total}",
                     )
 
-    # Phase 4: 顺序写入数据库
+    # Phase 4: Write database rows sequentially.
     for path, source_kind, checksum, suffix, width, height, internal_path in prepared:
         media_type = "image" if suffix in IMAGE_EXTENSIONS else "video"
         cursor = conn.execute(
@@ -208,7 +208,7 @@ def import_unlabeled_folder(
     # Build the final list of files to import
     to_import: list[Path] = list(image_files)  # always import images
 
-    # Handle videos — 并行抽帧
+    # Handle videos by extracting frames in parallel.
     skipped_videos = 0
     video_count = len(video_files)
     if extract_frames and video_count > 0:
@@ -241,7 +241,7 @@ def import_unlabeled_folder(
         reporter.update_on(conn, stage="importing_media", percent=15, current=0, total=total,
                            message="正在导入素材")
 
-    # 并行批量注册素材
+    # Register media in bulk.
     items: list[tuple[Path, str]] = []
     for path in to_import:
         source_kind = "frame" if extract_frames and path.suffix.lower() == ".jpg" and path.parent.name.startswith("video_frames_") else "dataset_import"
@@ -337,7 +337,7 @@ def import_parsed_labeled_dataset(
     paths = get_paths()
     total_samples = len(parsed.samples)
 
-    # 并行批量注册素材
+    # Register media in bulk.
     items = [(sample.image_path, "dataset_import") for sample in parsed.samples]
     path_to_asset = _batch_register_media_assets(
         conn, project_id, items, paths, reporter,

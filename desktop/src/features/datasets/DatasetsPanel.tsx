@@ -40,7 +40,7 @@ export function DatasetsPanel({
   // ImportDataModal state
   const [importModalOpen, setImportModalOpen] = useState(false);
 
-  // "从已有数据集构建" state
+  // State for building a dataset from existing datasets.
   const [selectedDatasetIds, setSelectedDatasetIds] = useState<number[]>([]);
   const [showTaskHistory, setShowTaskHistory] = useState(false);
 
@@ -124,7 +124,7 @@ export function DatasetsPanel({
     };
   }, [activeJobId, onRefresh, refreshDatasetJobs]);
 
-  // Called when user clicks "确认导入" in ImportDataModal with files selected
+  // Called when the user confirms an import with files selected.
   const handleImportFiles = async (mode: "existing" | "new", existingId: number, newName: string, extractFrames: boolean, paths: string[]) => {
     setImportModalOpen(false);
     setBusy(true);
@@ -146,7 +146,7 @@ export function DatasetsPanel({
     }
   };
 
-  // Called when user clicks "确认导入" in ImportDataModal with folder selected
+  // Called when the user confirms an import with a folder selected.
   const handleImportFolder = async (mode: "existing" | "new", existingId: number, newName: string, extractFrames: boolean, folderPath: string) => {
     setImportModalOpen(false);
     setBusy(true);

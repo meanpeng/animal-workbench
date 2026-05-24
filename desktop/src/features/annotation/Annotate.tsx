@@ -183,7 +183,7 @@ export function Annotate({
     if (!selected) return;
     const idx = imageItems.findIndex((item) => item.id === selected.id);
     if (idx === -1) return;
-    // 前后各预取 3 张
+    // Prefetch three items on each side of the current selection.
     for (let i = 1; i <= 3; i++) {
       if (idx - i >= 0) prefetchImage(imageItems[idx - i].id);
       if (idx + i < imageItems.length) prefetchImage(imageItems[idx + i].id);
@@ -914,11 +914,16 @@ export function Annotate({
         </div>
 
         <div className="sidebar-filter-row">
-          <div className="filter-btn-group">
-            <button className={`filter-btn ${statusFilter === "all" ? "active" : ""}`} onClick={() => handleStatusFilterChange("all")}>全部</button>
-            <button className={`filter-btn ${statusFilter === "annotated" ? "active" : ""}`} onClick={() => handleStatusFilterChange("annotated")}>已标</button>
-            <button className={`filter-btn ${statusFilter === "unannotated" ? "active" : ""}`} onClick={() => handleStatusFilterChange("unannotated")}>未标</button>
-          </div>
+          <Select
+            className="filter-select-compact status-filter-select"
+            options={[
+              { value: "all", label: "全部" },
+              { value: "annotated", label: "已标" },
+              { value: "unannotated", label: "未标" },
+            ]}
+            value={statusFilter}
+            onChange={(value) => handleStatusFilterChange(value as "all" | "annotated" | "unannotated")}
+          />
           {datasetClasses.length > 0 ? (
             <Select
               className="filter-select-compact"
@@ -1013,7 +1018,7 @@ export function Annotate({
             onMouseUp={finishDraw}
           >
             <Layer>
-            <Rect name="canvas-bg" x={0} y={0} width={canvasDims.width} height={canvasDims.height} fill="#f8fafc" />
+            <Rect name="canvas-bg" x={0} y={0} width={canvasDims.width} height={canvasDims.height} fill="#121213" />
             {image && selected ? (
               <KonvaImage name="image" image={image} x={layout.x} y={layout.y} width={layout.width} height={layout.height} />
             ) : (

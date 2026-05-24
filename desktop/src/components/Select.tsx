@@ -1,3 +1,4 @@
+import { Check, ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export type SelectOption = { value: string; label: string };
@@ -82,17 +83,7 @@ export function Select({
         <span className={selectedOption ? "select-trigger-text" : "select-trigger-text placeholder"}>
           {selectedOption ? selectedOption.label : placeholder ?? "请选择"}
         </span>
-        <svg
-          className={["select-arrow", open ? "open" : ""].join(" ")}
-          width="16"
-          height="16"
-          viewBox="0 0 16 16"
-        >
-          <path
-            fill="#64748b"
-            d="M4.146 5.646a.5.5 0 0 1 .708 0L8 8.793l3.146-3.147a.5.5 0 0 1 .708.708l-3.5 3.5a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 0 1 0-.708z"
-          />
-        </svg>
+        <ChevronDown className={["select-arrow", open ? "open" : ""].join(" ")} size={16} />
       </button>
 
       {open ? (
@@ -105,7 +96,8 @@ export function Select({
               className={["select-option", opt.value === currentValue ? "active" : ""].filter(Boolean).join(" ")}
               onClick={() => handleSelect(opt.value)}
             >
-              {opt.label}
+              <span>{opt.label}</span>
+              {opt.value === currentValue ? <Check className="select-option-check" size={16} /> : null}
             </li>
           ))}
         </ul>

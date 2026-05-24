@@ -117,7 +117,15 @@ class TrainingJobCreate(BaseModel):
     image_size: int = Field(default=960, ge=128, le=2048)
     batch_size: int = Field(default=8, ge=1, le=128)
     device: str = Field(default="auto", max_length=40)
-    mode: Literal["baseline", "finetune", "resume"] = "finetune"
+    mode: Literal["train", "resume"] = "train"
     base_model_id: int | None = None
+    base_model_path: str | None = Field(default=None, max_length=500)
+    resume_job_id: int | None = None
+    checkpoint_path: str | None = Field(default=None, max_length=500)
     run_yolo: bool = False
     advanced: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelProfileRequest(BaseModel):
+    model_id: int | None = None
+    model_path: str | None = Field(default=None, max_length=500)

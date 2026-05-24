@@ -100,6 +100,48 @@ export type TrainingJob = {
   started_at?: string | null;
   ended_at?: string | null;
   error_message?: string | null;
+  runtime_dataset_path?: string | null;
+  log_path?: string | null;
+  output_model_id?: number | null;
+};
+
+export type DeviceStatus = {
+  cpu: {
+    name: string;
+    cores: number;
+  };
+  memory: {
+    total: number | null;
+    available: number | null;
+    used: number | null;
+    percent: number | null;
+  };
+  python: string;
+  cuda_available: boolean;
+  torch_available: boolean;
+  ultralytics_available: boolean;
+  torch_error?: string;
+  ultralytics_error?: string;
+  gpus: Array<{
+    index: number;
+    name: string;
+    total_memory: number;
+    allocated_memory?: number;
+    reserved_memory?: number;
+    used_memory?: number;
+    free_memory?: number;
+  }>;
+};
+
+export type ModelProfile = {
+  ok: boolean;
+  name: string;
+  source: string;
+  model_type: string;
+  layer_count: number | null;
+  parameters: number | null;
+  trainable_parameters: number | null;
+  error: string | null;
 };
 
 export type DatasetMediaItem = {

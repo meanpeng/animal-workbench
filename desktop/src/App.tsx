@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { LucideIcon } from "lucide-react";
 import {
-  BarChart3,
-  CheckCircle2,
+  ChartSpline,
+  CirclePlay,
   Database,
-  Layers3,
-  ListChecks,
+  LayoutDashboard,
   Play,
   RefreshCw,
+  ScanSearch,
   Settings2,
-  Sparkles,
+  SquarePen,
 } from "lucide-react";
 import { api } from "./api";
 import { DataTable } from "./components/DataTable";
@@ -23,16 +24,17 @@ import type {
 } from "./types";
 import { DatasetsPanel } from "./features/datasets/DatasetsPanel";
 import { Annotate } from "./features/annotation/Annotate";
+import { TrainingPanel } from "./features/training/TrainingPanel";
 import { formatBeijingTime } from "./utils";
 
 type View = "dashboard" | "datasets" | "annotate" | "training" | "results";
 
-const navItems: Array<{ view: View; label: string; icon: typeof Database }> = [
-  { view: "dashboard", label: "首页", icon: BarChart3 },
-  { view: "datasets", label: "数据集", icon: Layers3 },
-  { view: "annotate", label: "标注", icon: ListChecks },
-  { view: "training", label: "训练", icon: Play },
-  { view: "results", label: "结果", icon: CheckCircle2 },
+const navItems: Array<{ view: View; label: string; icon: LucideIcon }> = [
+  { view: "dashboard", label: "首页", icon: LayoutDashboard },
+  { view: "datasets", label: "数据集", icon: Database },
+  { view: "annotate", label: "标注", icon: SquarePen },
+  { view: "training", label: "训练", icon: CirclePlay },
+  { view: "results", label: "结果", icon: ChartSpline },
 ];
 
 function App() {
@@ -114,7 +116,7 @@ function App() {
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <Sparkles size={24} />
+          <ScanSearch size={24} />
           <div>
             <strong>动物检测工作台</strong>
             <span>{title}</span>
@@ -158,7 +160,7 @@ function App() {
         {view === "dashboard" && <Dashboard summary={summary} batches={batches} jobs={jobs} models={models} />}
         {view === "datasets" && <DatasetsPanel datasets={datasets} onRefresh={refresh} onClassCreated={() => { void refresh(); }} onSwitchToAnnotate={(datasetId, mediaId) => {annotateTargetRef.current = { datasetId, mediaId }; setView("annotate"); }} />}
         {view === "annotate" && <Annotate datasets={datasets} initialDatasetId={annotateTargetRef.current?.datasetId ?? null} initialMediaId={annotateTargetRef.current?.mediaId ?? null} onTargetConsumed={() => { annotateTargetRef.current = null; }} />}
-        {view === "training" && <Training datasets={datasets} jobs={jobs} onRefresh={refresh} />}
+        {view === "training" && <TrainingPanel datasets={datasets} jobs={jobs} models={models} onRefresh={refresh} />}
         {view === "results" && <Results models={models} experiments={experiments} />}
       </main>
     </div>
@@ -273,7 +275,7 @@ function Training({
         image_size: imageSize,
         batch_size: batchSize,
         device,
-        mode: "finetune",
+        mode: "train",
         run_yolo: false,
       });
       await onRefresh();
