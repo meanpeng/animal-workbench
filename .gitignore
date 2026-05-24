@@ -1,0 +1,13 @@
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/
+**/node_modules/
+**/dist/
+**/target/
+**/*.log
+**/*.egg-info/
+.claude/settings.local.json
+*.db
+*.db-shm
+*.db-wal
+.env
