@@ -8,6 +8,7 @@ export function useDeviceStatus(pollInterval = 10_000) {
   const [status, setStatus] = useState<DeviceStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const mountedRef = useRef(true);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
@@ -23,23 +24,38 @@ export function useDeviceStatus(pollInterval = 10_000) {
 
   useEffect(() => {
     mountedRef.current = true;
-    void refresh(true);
-    const timer = setInterval(() => void refresh(false), pollInterval);
 
-    const onHidden = () => {
-      if (document.hidden) clearInterval(timer);
+    const stopPolling = () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
     };
-    const onVisible = () => {
-      if (!document.hidden) void refresh(false);
+
+    const startPolling = () => {
+      stopPolling();
+      if (!document.hidden) {
+        timerRef.current = setInterval(() => void refresh(false), pollInterval);
+      }
     };
-    document.addEventListener("visibilitychange", onHidden);
-    document.addEventListener("visibilitychange", onVisible);
+
+    void refresh(true);
+    startPolling();
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        stopPolling();
+        return;
+      }
+      void refresh(false);
+      startPolling();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       mountedRef.current = false;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onHidden);
-      document.removeEventListener("visibilitychange", onVisible);
+      stopPolling();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [refresh, pollInterval]);
 
@@ -47,6 +63,34 @@ export function useDeviceStatus(pollInterval = 10_000) {
 }
 
 // ── useModelProfile ──────────────────────────────────────────────────
+
+export const MODEL_FILES: Record<string, string> = {
+  yolo8n: "yolo8n.pt",
+  yolo11n: "yolo11n.pt",
+  yolo26n: "yolo26n.pt",
+};
+
+export function resolveTrainingModelPath(modelChoice: string, customModelPath: string) {
+  if (modelChoice === "custom") return customModelPath;
+  return MODEL_FILES[modelChoice] ?? "yolo11n.pt";
+}
+
+function selectedModelId(modelChoice: string) {
+  if (!modelChoice.startsWith("model:")) return null;
+  return Number(modelChoice.slice("model:".length));
+}
+
+export function buildTrainingModelPayload(modelChoice: string, customModelPath: string) {
+  const modelId = selectedModelId(modelChoice);
+  if (modelId != null) return { base_model_id: modelId };
+  return { base_model_path: resolveTrainingModelPath(modelChoice, customModelPath) };
+}
+
+function buildModelProfilePayload(modelChoice: string, customModelPath: string) {
+  const modelId = selectedModelId(modelChoice);
+  if (modelId != null) return { model_id: modelId };
+  return { model_path: resolveTrainingModelPath(modelChoice, customModelPath) };
+}
 
 export function useModelProfile() {
   const [profile, setProfile] = useState<ModelProfile | null>(null);
@@ -60,14 +104,7 @@ export function useModelProfile() {
       }
       setLoading(true);
       try {
-        let result: ModelProfile;
-        if (modelChoice.startsWith("model:")) {
-          result = await api.modelProfile({ model_id: Number(modelChoice.slice("model:".length)) });
-        } else {
-          result = await api.modelProfile({
-            model_path: modelChoice === "default" ? "yolo11n.pt" : customModelPath,
-          });
-        }
+        const result: ModelProfile = await api.modelProfile(buildModelProfilePayload(modelChoice, customModelPath));
         setProfile(result);
       } catch (error) {
         setProfile({

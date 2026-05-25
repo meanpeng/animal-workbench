@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 
 from fastapi.testclient import TestClient
@@ -97,6 +98,10 @@ def test_folder_import_job_reports_progress_and_imports_annotations(tmp_path, mo
         media = client.get("/media").json()
         annotations = client.get(f"/media/{media[0]['id']}/annotations").json()
         assert len(annotations["annotations"]) == 1
+
+        shutil.rmtree(source)
+        content = client.get(f"/media/{media[0]['id']}/content")
+        assert content.status_code == 200
 
 
 def test_folder_import_can_link_to_existing_dataset_and_deduplicates_annotations(tmp_path, monkeypatch):

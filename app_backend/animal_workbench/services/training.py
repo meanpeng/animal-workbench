@@ -275,6 +275,10 @@ def export_yolo_dataset(conn: sqlite3.Connection, job_id: int, paths: AppPaths |
 
     append_job_log(job_id, "Exporting dataset to YOLO layout.")
     export_root = paths.runtime_dir / "yolo_exports" / f"job_{job_id}"
+    yaml_path = export_root / "dataset.yaml"
+    if job["status"] == "cancelled" or _is_cancel_requested(job_id):
+        append_job_log(job_id, "Dataset export skipped because the job was cancelled.")
+        return yaml_path
     if export_root.exists():
         shutil.rmtree(export_root)
     for split in ("train", "val", "test"):
@@ -322,7 +326,12 @@ def export_yolo_dataset(conn: sqlite3.Connection, job_id: int, paths: AppPaths |
             split = "test"
         assigned.append((row, split))
 
+    export_cancelled = False
     for row, split in assigned:
+        if _is_cancel_requested(job_id) or _is_cancelled(conn, job_id):
+            export_cancelled = True
+            append_job_log(job_id, "Dataset export stopped because the job was cancelled.")
+            break
         source = Path(row["internal_path"])
         target_name = f"{row['media_id']}_{source.name}"
         image_target = export_root / "images" / split / target_name
@@ -350,7 +359,9 @@ def export_yolo_dataset(conn: sqlite3.Connection, job_id: int, paths: AppPaths |
                     f"{float(annotation['width']):.6f} {float(annotation['height']):.6f}\n"
                 )
 
-    yaml_path = export_root / "dataset.yaml"
+    if export_cancelled:
+        return yaml_path
+
     names = [row["display_name"] for row in classes]
     yaml_path.write_text(
         "\n".join(
@@ -367,16 +378,19 @@ def export_yolo_dataset(conn: sqlite3.Connection, job_id: int, paths: AppPaths |
         ),
         encoding="utf-8",
     )
-    conn.execute(
+    cursor = conn.execute(
         """
         UPDATE training_jobs
         SET status = 'exported', runtime_dataset_path = ?, log_path = ?
-        WHERE id = ?
+        WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')
         """,
         (str(yaml_path), str(paths.log_dir / f"training_job_{job_id}.log"), job_id),
     )
     conn.commit()
-    append_job_log(job_id, f"Dataset YAML: {yaml_path}")
+    if cursor.rowcount:
+        append_job_log(job_id, f"Dataset YAML: {yaml_path}")
+    else:
+        append_job_log(job_id, "Dataset export finished after the job had already left an exportable state.")
     return yaml_path
 
 
@@ -416,6 +430,9 @@ def _run_training_impl(job_id: int, paths: AppPaths) -> dict[str, Any]:
 
     with _connect() as conn:
         job = conn.execute("SELECT * FROM training_jobs WHERE id = ?", (job_id,)).fetchone()
+        if job and job["status"] == "cancelled":
+            append_job_log(job_id, "Job was cancelled before training started.")
+            return {"status": "cancelled"}
         params = json_loads(job["params"], {})
 
     if _is_cancelled_by_id(job_id):
@@ -424,15 +441,20 @@ def _run_training_impl(job_id: int, paths: AppPaths) -> dict[str, Any]:
 
     if not params.get("run_yolo", False):
         with _connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 UPDATE training_jobs
                 SET status = 'exported', ended_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND status = 'exported'
                 """,
                 (job_id,),
             )
             conn.commit()
+            if cursor.rowcount == 0:
+                if _is_cancelled(conn, job_id):
+                    append_job_log(job_id, "Job was cancelled before training started.")
+                    return {"status": "cancelled"}
+                raise RuntimeError("Training job was not ready to finish after dataset export.")
         append_job_log(job_id, "Dataset export completed. Real Ultralytics training was disabled.")
         return {"status": "exported", "dataset_yaml": str(yaml_path)}
 
@@ -440,11 +462,20 @@ def _run_training_impl(job_id: int, paths: AppPaths) -> dict[str, Any]:
         from ultralytics import YOLO
 
         with _connect() as conn:
-            conn.execute(
-                "UPDATE training_jobs SET status = 'running', started_at = CURRENT_TIMESTAMP WHERE id = ?",
+            cursor = conn.execute(
+                """
+                UPDATE training_jobs
+                SET status = 'running', started_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'exported'
+                """,
                 (job_id,),
             )
             conn.commit()
+            if cursor.rowcount == 0:
+                if _is_cancelled(conn, job_id):
+                    append_job_log(job_id, "Job was cancelled before training started.")
+                    return {"status": "cancelled"}
+                raise RuntimeError("Training job was not ready to start after dataset export.")
             model_name = _training_model_source(conn, params) or "yolo11n.pt"
         append_job_log(job_id, f"Starting Ultralytics training with model: {model_name}")
         model = YOLO(model_name)
@@ -500,7 +531,7 @@ def _run_training_impl(job_id: int, paths: AppPaths) -> dict[str, Any]:
                 """
                 UPDATE training_jobs
                 SET status = 'failed', ended_at = CURRENT_TIMESTAMP, error_message = ?
-                WHERE id = ?
+                WHERE id = ? AND status != 'cancelled'
                 """,
                 (str(exc), job_id),
             )

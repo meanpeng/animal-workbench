@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -54,6 +55,13 @@ def test_tauri_path_import_flow_serves_managed_media(tmp_path, monkeypatch):
         assert body["batch"]["name"] == "desktop import batch"
 
         media_id = body["imported"][0]["id"]
+        internal_path = Path(body["imported"][0]["internal_path"]).resolve()
+        media_dir = get_paths().media_dir.resolve()
+        internal_path.relative_to(media_dir)
+        assert internal_path.exists()
+        assert internal_path != image_path.resolve()
+
+        image_path.unlink()
         content = client.get(f"/media/{media_id}/content")
         assert content.status_code == 200
         assert content.headers["content-type"].startswith("image/")
@@ -203,6 +211,28 @@ def test_bulk_annotation_save_is_transactional(tmp_path, monkeypatch):
         batches = client.get("/annotation-batches").json()
         assert batches[0]["completed_items"] == 1
         assert batches[0]["status"] == "completed"
+
+        removed = client.post(
+            f"/media/{media_id}/annotations/bulk?dataset_id={dataset_id}",
+            json={"upserts": [], "delete_ids": [annotation_id]},
+        )
+        assert removed.status_code == 200
+        assert removed.json()["annotations"] == []
+
+        detail = client.get(f"/datasets/{dataset_id}/media").json()
+        assert detail["media"][0]["annotation_status"] == "unannotated"
+        assert detail["media"][0]["annotation_count"] == 0
+        assert detail["stats"]["total_annotations"] == 0
+        assert detail["stats"]["annotated_media"] == 0
+
+        datasets = client.get("/datasets").json()
+        stats = json.loads(next(item for item in datasets if item["id"] == dataset_id)["sample_stats"])
+        assert stats["annotation_count"] == 0
+        assert stats["annotated_media"] == 0
+
+        batches = client.get("/annotation-batches").json()
+        assert batches[0]["completed_items"] == 0
+        assert batches[0]["status"] == "open"
 
 
 def test_create_fusion_dataset_from_existing_datasets(tmp_path, monkeypatch):

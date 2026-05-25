@@ -183,6 +183,23 @@ export const api = {
     }),
   models: () => request<ModelItem[]>("/models"),
   experiments: () => request<Experiment[]>("/experiments"),
+  exportAnnotations: (datasetId: number, datasetName: string) => {
+    const url = `${API_BASE}/datasets/${datasetId}/annotations/export`;
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${datasetName.replace(/[/\\]/g, "_")}_annotations.zip`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  },
+  importAnnotations: (datasetId: number, folderPath: string) =>
+    request<{ ok: boolean; matched_media: number; imported_boxes: number; classes: string[]; format: string }>(
+      `/datasets/${datasetId}/annotations/import`,
+      {
+        method: "POST",
+        body: JSON.stringify({ folder_path: folderPath }),
+      },
+    ),
   datasetClasses: (datasetId: number) => request<Summary["classes"]>(`/datasets/${datasetId}/classes`),
   createDatasetClass: (datasetId: number, payload: { name: string; display_name: string; color?: string }) =>
     request<{ id: number }>(`/datasets/${datasetId}/classes`, {

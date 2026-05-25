@@ -30,7 +30,7 @@ def import_dataset_folder(
     target_dataset: dict[str, Any] | None = None,
     reporter: JobReporter | None = None,
     extract_frames: bool = False,
-    skip_copy: bool = True,
+    skip_copy: bool = False,
 ) -> dict[str, Any]:
     root = Path(folder).expanduser().resolve()
     if not root.exists() or not root.is_dir():
@@ -82,7 +82,7 @@ def _batch_register_media_assets(
     *,
     progress_base: float = 15,
     progress_range: float = 55,
-    skip_copy: bool = True,
+    skip_copy: bool = False,
 ) -> dict[Path, dict[str, Any]]:
     """Hash and (optionally) copy files in parallel, then return assets by source path."""
     if not items:
@@ -214,7 +214,7 @@ def import_unlabeled_folder(
     target_dataset: dict[str, Any] | None = None,
     reporter: JobReporter | None,
     extract_frames: bool = False,
-    skip_copy: bool = True,
+    skip_copy: bool = False,
 ) -> dict[str, Any]:
     files = iter_importable_files([str(root)])
     paths = get_paths()
@@ -344,7 +344,7 @@ def import_parsed_labeled_dataset(
     dataset_type: str | None = None,
     target_dataset: dict[str, Any] | None = None,
     reporter: JobReporter | None,
-    skip_copy: bool = True,
+    skip_copy: bool = False,
 ) -> dict[str, Any]:
     if reporter:
         reporter.update_on(conn, stage="parsing", percent=10, current=len(parsed.samples), total=len(parsed.samples), message=f"识别到 {parsed.format} 标注")

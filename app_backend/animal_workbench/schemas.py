@@ -15,6 +15,7 @@ class MediaImportRequest(BaseModel):
     batch_name: str | None = Field(default=None, max_length=160)
     camera_site: str | None = Field(default=None, max_length=120)
     extract_frames: bool = False
+    copy_files: bool = True
 
 
 class DatasetCreate(BaseModel):
@@ -49,6 +50,7 @@ class DatasetFolderImportRequest(BaseModel):
     batch_name: str | None = Field(default=None, max_length=160)
     create_dataset: bool = True
     extract_frames: bool = False
+    copy_files: bool = True
     target_dataset: DatasetTarget | None = None
 
 
@@ -129,6 +131,10 @@ class TrainingJobCreate(BaseModel):
 class ModelProfileRequest(BaseModel):
     model_id: int | None = None
     model_path: str | None = Field(default=None, max_length=500)
+
+
+class AnnotationImportRequest(BaseModel):
+    folder_path: str = Field(min_length=1, max_length=500)
 
 
 class StorageSettingsUpdate(BaseModel):

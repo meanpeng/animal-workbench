@@ -1,97 +1,19 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, Plus, RotateCcw, RotateCw, Trash2 } from "lucide-react";
-import { Image as KonvaImage, Label as KonvaLabel, Layer, Rect, Stage, Tag as KonvaTag, Text, Transformer } from "react-konva";
-import { Select } from "../../components/Select";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
-import type { Dataset, DatasetDetail, MediaAsset, Summary } from "../../types";
-
-type AnnotationBox = {
-  local_id: string;
-  id?: number;
-  class_id: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  review_status: "draft" | "confirmed" | "rejected";
-  dirty?: boolean;
-};
-
-type AnnotationSnapshot = {
-  boxes: AnnotationBox[];
-  deletedIds: number[];
-};
+import type { Dataset, DatasetDetail, Summary } from "../../types";
+import { cloneBox, makeLocalId, mapAnnotationBox } from "./annotationBoxUtils";
+import type { AnnotationBox, AnnotationSnapshot } from "./annotationTypes";
+import { AnnotationCanvas } from "./components/AnnotationCanvas";
+import { AnnotationModals } from "./components/AnnotationModals";
+import { AnnotationSidebar } from "./components/AnnotationSidebar";
+import { DatasetPicker } from "./components/DatasetPicker";
+import { useAnnotationSave } from "./hooks/useAnnotationSave";
+import { useAnnotationShortcuts } from "./hooks/useAnnotationShortcuts";
+import { prefetchImage, useHtmlImage } from "./hooks/useHtmlImage";
+import { useResizableCanvas } from "./hooks/useResizableCanvas";
+import { clampBox, imageLayout, normalizePoint, pixelsToBox, pointInsideImage, resizeDraftBox } from "./imageGeometry";
 
 const MEDIA_PAGE_SIZE = 100;
-
-function shortcutLabel(index: number): string | null {
-  if (index < 9) return String(index + 1);          // 1-9
-  if (index === 9) return "0";                       // 0
-  if (index <= 35) return String.fromCharCode(87 + index); // a-z
-  return null;
-}
-
-function truncateName(name: string, maxLen = 28): string {
-  if (name.length <= maxLen) return name;
-  const head = Math.floor(maxLen * 0.45);
-  const tail = maxLen - head - 3;
-  return name.slice(0, head) + "..." + name.slice(-tail);
-}
-
-function readableTextColor(hexColor: string): "#0f172a" | "#fff" {
-  const hex = hexColor.replace("#", "");
-  if (hex.length !== 6) return "#fff";
-  const red = Number.parseInt(hex.slice(0, 2), 16);
-  const green = Number.parseInt(hex.slice(2, 4), 16);
-  const blue = Number.parseInt(hex.slice(4, 6), 16);
-  const luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255;
-  return luminance > 0.62 ? "#0f172a" : "#fff";
-}
-
-function DatasetThumbs({ datasetId, sampleStats }: { datasetId: number; sampleStats: string }) {
-  const [urls, setUrls] = useState<string[] | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        let mediaCount = 0;
-        try {
-          const stats = JSON.parse(sampleStats || "{}");
-          mediaCount = stats.media_count || 0;
-        } catch { /* ignore */ }
-        const limit = 4;
-        const offset = mediaCount > limit
-          ? Math.floor(Math.random() * (mediaCount - limit))
-          : 0;
-        const result = await api.datasetMedia(datasetId, { limit, offset });
-        if (cancelled) return;
-        setUrls(result.media.map((m) => api.mediaContentUrl(m.id)));
-      } catch (e) {
-        if (!cancelled) {
-          console.error("DatasetThumbs load failed for dataset", datasetId, e);
-          setUrls([]);
-        }
-      }
-    };
-    void load();
-    return () => { cancelled = true; };
-  }, [datasetId, sampleStats]);
-
-  return (
-    <div className="dataset-select-thumbs">
-      {urls && urls.length > 0 ? (
-        urls.map((url, i) => (
-          <img key={i} src={url} alt="" className="dataset-select-thumb" />
-        ))
-      ) : (
-        <span className="dataset-select-thumb-placeholder">
-          {urls === null ? "⏳" : "🖼"}
-        </span>
-      )}
-    </div>
-  );
-}
 
 export function Annotate({
   datasets,
@@ -135,8 +57,6 @@ export function Annotate({
   const [future, setFuture] = useState<AnnotationSnapshot[]>([]);
   const [activeClassId, setActiveClassId] = useState<number>(0);
   const [message, setMessage] = useState("请先选择数据集，再开始标注。");
-  const [canvasDims, setCanvasDims] = useState({ width: 860, height: 520 });
-  const stageContainerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<any>(null);
   const [addClassOpen, setAddClassOpen] = useState(false);
   const [newClassDisplayName, setNewClassDisplayName] = useState("");
@@ -147,29 +67,13 @@ export function Annotate({
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [unsavedModalOpen, setUnsavedModalOpen] = useState(false);
   const [pendingNavAction, setPendingNavAction] = useState<(() => void) | null>(null);
-
-  useLayoutEffect(() => {
-    const el = stageContainerRef.current;
-    if (!el) return;
-    const syncSize = () => {
-      const width = Math.floor(el.clientWidth);
-      const height = Math.floor(el.clientHeight);
-      if (width <= 0 || height <= 0) return;
-      setCanvasDims((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
-    };
-    syncSize();
-    const ro = new ResizeObserver(syncSize);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [selectedDatasetId]);
+  const { canvasDims, stageContainerRef } = useResizableCanvas(selectedDatasetId);
 
   // ── derived ──
   const imageItems = useMemo(() => {
     return datasetMedia.filter((item) => item.media_type === "image");
   }, [datasetMedia]);
   const hasMoreMedia = datasetMedia.length < datasetMediaTotal;
-
-  const classById = useMemo(() => new Map(datasetClasses.map((item) => [item.id, item])), [datasetClasses]);
 
   const selected = useMemo(
     () => imageItems.find((item) => item.id === selectedId) ?? imageItems[0],
@@ -390,7 +294,7 @@ export function Annotate({
     };
   }, [selected, selectedDatasetId]);
 
-  const layout = imageLayout(selected as unknown as MediaAsset | undefined, canvasDims.width, canvasDims.height);
+  const layout = imageLayout(selected, canvasDims.width, canvasDims.height);
   const selectedBox = boxes.find((box) => box.local_id === selectedBoxKey);
   const displayedBoxes = useMemo(() => (draftBox ? [...boxes, draftBox] : boxes), [boxes, draftBox]);
   const hasUnsavedChanges = boxes.some((box) => !box.id || box.dirty) || deletedIds.length > 0 || draftBox !== null;
@@ -432,64 +336,8 @@ export function Annotate({
     transformer.getLayer()?.batchDraw();
   }, [selectedBoxKey, boxes, layout]);
 
-  // ── keyboard shortcut refs (declared early, assigned after function definitions) ──
-  const imageItemsRef = useRef(imageItems);
-  imageItemsRef.current = imageItems;
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
-  const selectedBoxKeyRef = useRef(selectedBoxKey);
-  selectedBoxKeyRef.current = selectedBoxKey;
-  const changeClassRef = useRef<(classId: number) => void>(null!);
-  const undoRef = useRef<() => void>(null!);
-  const redoRef = useRef<() => void>(null!);
-  const deleteSelectedRef = useRef<() => void>(null!);
-  const selectMediaRef = useRef<(mediaId: number) => void>(null!);
-  const classesRef = useRef(datasetClasses);
-  classesRef.current = datasetClasses;
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const currentClasses = classesRef.current;
-      // number/letter keys for class selection: 1-9 → class 1-9, 0 → class 10, a-z → class 11-36
-      const key = event.key;
-      let classIndex = -1;
-      if (key >= "1" && key <= "9") classIndex = key.charCodeAt(0) - 49;       // "1"=49 → index 0
-      else if (key === "0") classIndex = 9;                                      // "0" → index 9
-      else if (key >= "a" && key <= "z") classIndex = key.charCodeAt(0) - 87;   // "a"=97 → index 10
-      if (classIndex >= 0 && classIndex < currentClasses.length) {
-        const tag = (event.target as HTMLElement)?.tagName;
-        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-        event.preventDefault();
-        changeClassRef.current(currentClasses[classIndex].id);
-        return;
-      }
-      // arrow keys to navigate images
-      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-        const tag = (event.target as HTMLElement)?.tagName;
-        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-        event.preventDefault();
-        const currentItems = imageItemsRef.current;
-        const currentId = selectedIdRef.current;
-        const idx = currentItems.findIndex((item) => item.id === currentId);
-        if (event.key === "ArrowLeft" && idx > 0) selectMediaRef.current(currentItems[idx - 1].id);
-        else if (event.key === "ArrowRight" && idx < currentItems.length - 1) selectMediaRef.current(currentItems[idx + 1].id);
-        return;
-      }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
-        event.preventDefault();
-        undoRef.current();
-      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
-        event.preventDefault();
-        redoRef.current();
-      } else if (event.key === "Delete" || event.key === "Backspace") {
-        if (selectedBoxKeyRef.current) {
-          event.preventDefault();
-          deleteSelectedRef.current();
-        }
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
 
   const snapshot = (): AnnotationSnapshot => ({
     boxes: boxes.map(cloneBox),
@@ -665,12 +513,17 @@ export function Annotate({
     setMessage("\u5df2\u66f4\u65b0\u6240\u9009\u6807\u6ce8\u7c7b\u522b\u3002");
   };
 
-  // wire keyboard shortcut refs after function definitions
-  changeClassRef.current = changeClass;
-  undoRef.current = undo;
-  redoRef.current = redo;
-  deleteSelectedRef.current = deleteSelected;
-  selectMediaRef.current = selectMedia;
+  useAnnotationShortcuts({
+    classes: datasetClasses,
+    imageItems,
+    selectedId,
+    selectedBoxKey,
+    onChangeClass: changeClass,
+    onUndo: undo,
+    onRedo: redo,
+    onDeleteSelected: deleteSelected,
+    onSelectMedia: selectMedia,
+  });
 
   const handleStatusFilterChange = (next: "all" | "annotated" | "unannotated") => {
     if (next === statusFilter) return;
@@ -759,149 +612,26 @@ export function Annotate({
     setMessage("\u6807\u6ce8\u6846\u5c3a\u5bf8\u5df2\u66f4\u65b0\u3002");
   };
 
-  const saveAll = async () => {
-    if (!selected) return;
-    saveCurrentAsDraft();
-    const otherDraftKeys = [...draftsRef.current.keys()].filter((id) => id !== selected.id);
-    if (otherDraftKeys.length > 0) {
-      setSaveModalOpen(true);
-      return;
-    }
-    await doSaveCurrent();
-  };
-
-  const doSaveCurrent = async (): Promise<boolean> => {
-    if (!selected || !selectedDatasetId) return false;
-    const unsaved = boxes.filter((box) => !box.id);
-    const changed = boxes.filter((box) => box.id && box.dirty);
-    const totalChanges = unsaved.length + changed.length + deletedIds.length;
-    if (totalChanges === 0) {
-      draftsRef.current.delete(selected.id);
-      setDraftMediaIds(new Set(draftsRef.current.keys()));
-      await api.markMediaAnnotated(selectedDatasetId, selected.id);
-      setMessage("\u6807\u6ce8\u5df2\u4fdd\u5b58\u3002");
-      return true;
-    }
-    setSaveStatus("saving");
-    setMessage(`\u6b63\u5728\u4fdd\u5b58 ${totalChanges} \u4e2a\u6807\u6ce8\u6539\u52a8`);
-    try {
-      const result = await api.bulkSaveAnnotations(selected.id, selectedDatasetId, {
-        delete_ids: deletedIds,
-        upserts: [
-          ...changed
-            .filter((box) => box.id)
-            .map((box) => ({ id: box.id, ...annotationPayload(box) })),
-          ...unsaved.map((box) => annotationPayload({ ...box, review_status: "confirmed" })),
-        ],
-      });
-      setBoxes(result.annotations.map(mapAnnotationBox));
-      setDeletedIds([]);
-      setHistory([]);
-      setFuture([]);
-      localStorage.setItem(`annotate_pos_${selectedDatasetId}`, String(selected.id));
-      draftsRef.current.delete(selected.id);
-      setDraftMediaIds(new Set(draftsRef.current.keys()));
-      setSaveStatus("saved");
-      setMessage("\u6807\u6ce8\u5df2\u4fdd\u5b58\u3002");
-      setTimeout(() => setSaveStatus("idle"), 2000);
-      return true;
-    } catch (error) {
-      setSaveStatus("error");
-      setMessage(error instanceof Error ? error.message : "\u4fdd\u5b58\u5931\u8d25");
-      return false;
-    }
-  };
-
-  const doSaveAllDrafts = async (): Promise<boolean> => {
-    if (!selectedDatasetId) return false;
-    setSaveStatus("saving");
-    let totalSaved = 0;
-    try {
-      if (selected) {
-        const unsaved = boxes.filter((box) => !box.id);
-        const changed = boxes.filter((box) => box.id && box.dirty);
-        const currentChanges = unsaved.length + changed.length + deletedIds.length;
-        if (currentChanges > 0) {
-          setMessage("\u6b63\u5728\u4fdd\u5b58\u5f53\u524d\u56fe\u7247\u6807\u6ce8...");
-          const result = await api.bulkSaveAnnotations(selected.id, selectedDatasetId, {
-            delete_ids: deletedIds,
-            upserts: [
-              ...changed.filter((box) => box.id).map((box) => ({ id: box.id, ...annotationPayload(box) })),
-              ...unsaved.map((box) => annotationPayload({ ...box, review_status: "confirmed" })),
-            ],
-          });
-          setBoxes(result.annotations.map(mapAnnotationBox));
-          setDeletedIds([]);
-          setHistory([]);
-          setFuture([]);
-          totalSaved += currentChanges;
-        } else {
-          await api.markMediaAnnotated(selectedDatasetId, selected.id);
-        }
-      }
-      for (const [mediaId, draft] of draftsRef.current) {
-        if (selected && mediaId === selected.id) continue;
-        const draftUnsaved = draft.boxes.filter((b) => !b.id);
-        const draftChanged = draft.boxes.filter((b) => b.id && b.dirty);
-        const draftChanges = draftUnsaved.length + draftChanged.length + draft.deletedIds.length;
-        if (draftChanges > 0) {
-          setMessage(`\u6b63\u5728\u4fdd\u5b58\u56fe\u7247 #${mediaId} \u7684\u8349\u7a3f...`);
-          await api.bulkSaveAnnotations(mediaId, selectedDatasetId, {
-            delete_ids: draft.deletedIds,
-            upserts: [
-              ...draftChanged.map((box) => ({ id: box.id!, ...annotationPayload(box) })),
-              ...draftUnsaved.map((box) => annotationPayload({ ...box, review_status: "confirmed" })),
-            ],
-          });
-          totalSaved += draftChanges;
-        } else {
-          await api.markMediaAnnotated(selectedDatasetId, mediaId);
-        }
-      }
-      draftsRef.current.clear();
-      setDraftMediaIds(new Set());
-      localStorage.setItem(`annotate_pos_${selectedDatasetId}`, String(selected?.id));
-      setSaveStatus("saved");
-      setMessage(`\u5df2\u4fdd\u5b58\u5168\u90e8 ${totalSaved} \u4e2a\u6807\u6ce8\u6539\u52a8\u3002`);
-      setTimeout(() => setSaveStatus("idle"), 2000);
-      return true;
-    } catch (error) {
-      setSaveStatus("error");
-      setMessage(error instanceof Error ? error.message : "\u4fdd\u5b58\u5931\u8d25");
-      return false;
-    }
-  };
+  const { saveAll, doSaveCurrent, doSaveAllDrafts } = useAnnotationSave({
+    selected,
+    selectedDatasetId,
+    boxes,
+    deletedIds,
+    draftsRef,
+    saveCurrentAsDraft,
+    setBoxes,
+    setDeletedIds,
+    setHistory,
+    setFuture,
+    setDraftMediaIds,
+    setSaveStatus,
+    setSaveModalOpen,
+    setMessage,
+  });
 
   // ── dataset selector view ──
   if (!selectedDatasetId) {
-    return (
-      <section className="stack">
-        <div className="panel flush">
-          <h2>选择数据集</h2>
-          <p className="helper-text">请选择一个数据集开始标注。数据集在「数据集管理」页面创建。</p>
-        </div>
-        <div className="dataset-select-grid">
-          {datasets.length === 0 ? (
-            <EmptyLine text="还没有数据集，请先在「数据集管理」中创建或导入。" />
-          ) : (
-            datasets.map((ds) => (
-                <button
-                  key={ds.id}
-                  className="dataset-select-card"
-                    onClick={() => setSelectedDatasetId(ds.id)}
-                >
-                  <DatasetThumbs datasetId={ds.id} sampleStats={ds.sample_stats} />
-                  <div className="dataset-select-info">
-                    <strong>{ds.name}</strong>
-                    <span>{datasetTypeName(ds.dataset_type)}</span>
-                    <span className="dataset-select-meta">{datasetStats(ds)}</span>
-                  </div>
-                </button>
-              ))
-          )}
-        </div>
-      </section>
-    );
+    return <DatasetPicker datasets={datasets} onSelectDataset={setSelectedDatasetId} />;
   }
 
   const selectedDataset = datasets.find((d) => d.id === selectedDatasetId);
@@ -909,544 +639,117 @@ export function Annotate({
 
   return (
     <section className="annotation-layout">
-      <aside className="annotation-sidebar">
-        <div className="sidebar-header">
-          <button className="back-link" onClick={handleDatasetBack} title="返回选择数据集">
-            ← 切换
-          </button>
-          <span className="sidebar-dataset-name" title={selectedDataset?.name}>{selectedDataset?.name ?? `#${selectedDatasetId}`}</span>
-          <span className="sidebar-progress">{totalAnnotated}/{currentDatasetStats?.total_media ?? datasetMedia.length}</span>
-        </div>
-
-        <div className="sidebar-filter-row">
-          <Select
-            className="filter-select-compact status-filter-select"
-            options={[
-              { value: "all", label: "全部" },
-              { value: "annotated", label: "已标" },
-              { value: "unannotated", label: "未标" },
-            ]}
-            value={statusFilter}
-            onChange={(value) => handleStatusFilterChange(value as "all" | "annotated" | "unannotated")}
-          />
-          {datasetClasses.length > 0 ? (
-            <Select
-              className="filter-select-compact"
-              options={[{ value: "", label: "全部类别" }, ...datasetClasses.map((cls) => ({ value: String(cls.id), label: cls.display_name }))]}
-              value={String(classFilterId ?? "")}
-              onChange={handleClassFilterChange}
-            />
-          ) : null}
-        </div>
-
-        <div className="media-list" ref={mediaListRef} onScroll={handleMediaListScroll}>
-          {loadingDataset ? (
-            <EmptyLine text="加载中..." />
-          ) : imageItems.length === 0 ? (
-            <EmptyLine text="无匹配图片" />
-          ) : (
-            <>
-              {imageItems.map((item) => (
-                <button
-                  key={item.id}
-                  className={selected?.id === item.id ? "media-button active" : "media-button"}
-                  onClick={() => selectMedia(item.id)}
-                  title={item.original_name}
-                >
-                  <span className="media-name">
-                    <span className={`status-dot ${draftMediaIds.has(item.id) ? "draft" : item.annotation_status === "annotated" || item.annotation_count > 0 ? "saved" : "empty"}`} />
-                    <span className="media-id">{item.id}</span> {truncateName(item.original_name)}
-                  </span>
-                  <span className="media-meta">
-                    {item.annotation_count > 0 ? `${item.annotation_count} boxes` : ""}
-                  </span>
-                </button>
-              ))}
-              {loadingMoreMedia ? <EmptyLine text="Loading more..." /> : null}
-              {!loadingMoreMedia && hasMoreMedia ? (
-                <button className="media-button" onClick={() => void loadMoreMedia()}>
-                  <span className="media-name">Load more</span>
-                  <span className="media-meta">{datasetMedia.length}/{datasetMediaTotal}</span>
-                </button>
-              ) : null}
-            </>
-          )}
-        </div>
-      </aside>
+      <AnnotationSidebar
+        selectedDatasetId={selectedDatasetId}
+        selectedDatasetName={selectedDataset?.name}
+        totalAnnotated={totalAnnotated}
+        totalMedia={currentDatasetStats?.total_media ?? datasetMedia.length}
+        statusFilter={statusFilter}
+        onStatusFilterChange={handleStatusFilterChange}
+        datasetClasses={datasetClasses}
+        classFilterId={classFilterId}
+        onClassFilterChange={handleClassFilterChange}
+        mediaListRef={mediaListRef}
+        onMediaListScroll={handleMediaListScroll}
+        loadingDataset={loadingDataset}
+        imageItems={imageItems}
+        selectedMediaId={selected?.id}
+        draftMediaIds={draftMediaIds}
+        onSelectMedia={selectMedia}
+        loadingMoreMedia={loadingMoreMedia}
+        hasMoreMedia={hasMoreMedia}
+        datasetMediaLength={datasetMedia.length}
+        datasetMediaTotal={datasetMediaTotal}
+        onLoadMoreMedia={() => void loadMoreMedia()}
+        onBack={handleDatasetBack}
+      />
 
       <div className="annotator">
-        <div className="class-tags">
-          {datasetClasses.map((item, index) => {
-            const isActive = item.id === (selectedBox?.class_id ?? activeClassId);
-            const color = item.color ?? "#2979ff";
-            const shortcut = shortcutLabel(index);
-            return (
-              <button
-                key={item.id}
-                className={`class-tag ${isActive ? "active" : ""}`}
-                style={{
-                  "--tag-color": color,
-                  "--tag-border": color + "33",
-                  "--tag-bg": color + "14",
-                  "--tag-border-hover": color + "66",
-                  "--tag-bg-hover": color + "22",
-                } as React.CSSProperties}
-                onClick={() => changeClass(item.id)}
-                title={shortcut ? `${item.display_name} (${shortcut})` : item.display_name}
-              >
-                {shortcut ? <span className="class-tag-num">{shortcut}</span> : null}
-                {item.display_name}
-              </button>
-            );
-          })}
-          <button
-            className="class-tag class-tag-add"
-            onClick={() => {
-              setNewClassDisplayName("");
-              setAddClassError("");
-              setAddClassOpen(true);
-            }}
-            title="新增类别"
-          >
-            <Plus size={13} />
-            新增
-          </button>
-        </div>
+        <AnnotationCanvas
+          datasetClasses={datasetClasses}
+          selectedBox={selectedBox}
+          activeClassId={activeClassId}
+          onChangeClass={changeClass}
+          onOpenAddClass={() => {
+            setNewClassDisplayName("");
+            setAddClassError("");
+            setAddClassOpen(true);
+          }}
+          stageContainerRef={stageContainerRef}
+          stageRef={stageRef}
+          transformerRef={transformerRef}
+          canvasDims={canvasDims}
+          onStartDraw={startDraw}
+          onUpdateDraw={updateDraw}
+          onFinishDraw={finishDraw}
+          image={image}
+          selected={selected}
+          layout={layout}
+          displayedBoxes={displayedBoxes}
+          selectedBoxKey={selectedBoxKey}
+          draftBox={draftBox}
+          onSelectBox={setSelectedBoxKey}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+          onTransformStart={handleTransformStart}
+          onTransformEnd={handleTransformEnd}
+          saveStatus={saveStatus}
+          message={message}
+          onUndo={undo}
+          canUndo={history.length > 0}
+          onRedo={redo}
+          canRedo={future.length > 0}
+          onDeleteSelected={deleteSelected}
+          onSave={() => void saveAll()}
+        />
 
-        <div className="stage-container" ref={stageContainerRef}>
-          <Stage
-            ref={stageRef}
-            width={canvasDims.width}
-            height={canvasDims.height}
-            onMouseDown={startDraw}
-            onMouseMove={updateDraw}
-            onMouseUp={finishDraw}
-          >
-            <Layer>
-            <Rect name="canvas-bg" x={0} y={0} width={canvasDims.width} height={canvasDims.height} fill="#121213" />
-            {image && selected ? (
-              <KonvaImage name="image" image={image} x={layout.x} y={layout.y} width={layout.width} height={layout.height} />
-            ) : (
-              <Text x={canvasDims.width / 2 - 100} y={canvasDims.height / 2 - 15} text={selected ? "正在加载图片" : "选择图片后开始标注"} fontSize={20} fill="#334155" />
-            )}
-            {displayedBoxes.map((box) => {
-              const classItem = classById.get(box.class_id);
-              const color = classItem?.color ?? "#2979ff";
-              const labelTextColor = readableTextColor(color);
-              const displayName = classItem?.display_name ?? "";
-              const px = layout.x + box.x * layout.width;
-              const py = layout.y + box.y * layout.height;
-              const pw = box.width * layout.width;
-              return (
-                <Fragment key={box.local_id}>
-                  <Rect
-                    id={`box-${box.local_id}`}
-                    name="annotation-box"
-                    x={px}
-                    y={py}
-                    width={pw}
-                    height={box.height * layout.height}
-                    stroke={color}
-                    strokeWidth={box.local_id === selectedBoxKey ? 4 : 3}
-                    perfectDrawEnabled={false}
-                    shadowForStrokeEnabled={false}
-                    draggable={!draftBox}
-                    dash={box.id ? undefined : [8, 6]}
-                    onMouseDown={(event) => {
-                      event.cancelBubble = true;
-                      setSelectedBoxKey(box.local_id);
-                    }}
-                    onDragStart={(event) => handleDragStart(box, event)}
-                    onDragEnd={(event) => handleDragEnd(box, event)}
-                    onTransformStart={(event) => handleTransformStart(box, event)}
-                    onTransformEnd={(event) => handleTransformEnd(box, event)}
-                  />
-                  {displayName ? (
-                    <KonvaLabel x={px} y={py - 22}>
-                      <KonvaTag fill={color} cornerRadius={2} />
-                      <Text text={displayName} fontSize={13} fontStyle="bold" fill={labelTextColor} padding={3} />
-                    </KonvaLabel>
-                  ) : null}
-                </Fragment>
-              );
-            })}
-            <Transformer
-              ref={transformerRef}
-              rotateEnabled={false}
-              enabledAnchors={["top-left", "top-right", "bottom-left", "bottom-right", "middle-left", "middle-right"]}
-              borderStroke="#0f172a"
-              anchorStroke="#0f172a"
-              anchorFill="#ffffff"
-              anchorSize={8}
-            />
-            </Layer>
-          </Stage>
-        </div>
-
-        <div className="canvas-actions-row">
-          <span className="inline-status">
-            {saveStatus === "saving" ? "⏳ " : saveStatus === "saved" ? "✓ " : saveStatus === "error" ? "⚠ " : ""}
-            {message}
-          </span>
-          <div className="canvas-actions">
-            <button title="撤销 Ctrl+Z" onClick={undo} disabled={history.length === 0}>
-              <RotateCcw size={15} />
-              <span>撤销</span>
-            </button>
-            <button title="重做 Ctrl+Y" onClick={redo} disabled={future.length === 0}>
-              <RotateCw size={15} />
-              <span>重做</span>
-            </button>
-            <button title="删除标注 Delete" onClick={deleteSelected} disabled={!selectedBoxKey}>
-              <Trash2 size={15} />
-              <span>删除</span>
-            </button>
-            <button className="save-btn" title="保存标注" onClick={() => void saveAll()} disabled={!selected}>
-              <CheckCircle2 size={15} />
-              <span>保存</span>
-            </button>
-          </div>
-        </div>
-
-        {addClassOpen ? (
-          <div className="modal-overlay">
-            <div className="modal-dialog" onClick={(event) => event.stopPropagation()}>
-              <h3>新增标注类别</h3>
-              <input
-                value={newClassDisplayName}
-                onChange={(event) => {
-                  setNewClassDisplayName(event.target.value);
-                  setAddClassError("");
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !addingClass) void handleCreateClass();
-                }}
-                placeholder="类别名称，例如：野猫"
-                autoFocus
-                disabled={addingClass}
-              />
-              {addClassError ? <p className="modal-error">{addClassError}</p> : null}
-              <div className="modal-actions">
-                <button onClick={() => setAddClassOpen(false)} disabled={addingClass}>取消</button>
-                <button className="primary" onClick={() => void handleCreateClass()} disabled={addingClass || !newClassDisplayName.trim()}>
-                  {addingClass ? "创建中..." : "确定"}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {saveModalOpen ? (
-          <div className="modal-overlay">
-            <div className="modal-dialog" onClick={(event) => event.stopPropagation()}>
-              <h3>保存标注</h3>
-              <p className="modal-desc">
-                当前有 {draftsRef.current.size - (draftsRef.current.has(selected.id) ? 1 : 0)} 张其他图片的标注草稿未保存。
-              </p>
-              <div className="modal-actions">
-                <button onClick={() => setSaveModalOpen(false)}>取消</button>
-                <button onClick={() => { setSaveModalOpen(false); void doSaveCurrent(); }}>
-                  仅保存当前图片
-                </button>
-                <button className="primary" onClick={() => { setSaveModalOpen(false); void doSaveAllDrafts(); }}>
-                  保存全部草稿
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {unsavedModalOpen ? (
-          <div className="modal-overlay">
-            <div className="modal-dialog" onClick={(event) => event.stopPropagation()}>
-              <h3>未保存的草稿</h3>
-              <p className="modal-desc">
-                当前有 {draftsRef.current.size} 张图片的标注草稿未保存，离开后草稿会丢失。
-              </p>
-              <div className="modal-actions">
-                <button onClick={() => { setUnsavedModalOpen(false); setPendingNavAction(null); }}>取消</button>
-                <button onClick={() => {
-                  const action = pendingNavAction;
-                  setUnsavedModalOpen(false);
-                  setPendingNavAction(null);
-                  draftsRef.current.clear();
-                  setDraftMediaIds(new Set());
-                  action?.();
-                }}>
-                  不保存
-                </button>
-                <button className="primary" onClick={() => void (async () => {
-                  const success = await doSaveAllDrafts();
-                  if (success) {
-                    const action = pendingNavAction;
-                    setUnsavedModalOpen(false);
-                    setPendingNavAction(null);
-                    action?.();
-                  }
-                })()}>
-                  保存全部并返回
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
+        <AnnotationModals
+          addClassOpen={addClassOpen}
+          newClassDisplayName={newClassDisplayName}
+          addClassError={addClassError}
+          addingClass={addingClass}
+          onNewClassDisplayNameChange={(value) => {
+            setNewClassDisplayName(value);
+            setAddClassError("");
+          }}
+          onCloseAddClass={() => setAddClassOpen(false)}
+          onCreateClass={() => void handleCreateClass()}
+          saveModalOpen={saveModalOpen}
+          otherDraftCount={selected ? draftsRef.current.size - (draftsRef.current.has(selected.id) ? 1 : 0) : 0}
+          onCloseSaveModal={() => setSaveModalOpen(false)}
+          onSaveCurrent={() => {
+            setSaveModalOpen(false);
+            void doSaveCurrent();
+          }}
+          onSaveAllDrafts={() => {
+            setSaveModalOpen(false);
+            void doSaveAllDrafts();
+          }}
+          unsavedModalOpen={unsavedModalOpen}
+          draftCount={draftsRef.current.size}
+          onCancelUnsaved={() => {
+            setUnsavedModalOpen(false);
+            setPendingNavAction(null);
+          }}
+          onDiscardUnsaved={() => {
+            const action = pendingNavAction;
+            setUnsavedModalOpen(false);
+            setPendingNavAction(null);
+            draftsRef.current.clear();
+            setDraftMediaIds(new Set());
+            action?.();
+          }}
+          onSaveAllAndContinue={() => void (async () => {
+            const success = await doSaveAllDrafts();
+            if (success) {
+              const action = pendingNavAction;
+              setUnsavedModalOpen(false);
+              setPendingNavAction(null);
+              action?.();
+            }
+          })()}
+        />
       </div>
     </section>
   );
 }
-
-function makeLocalId() {
-  return `local-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
-}
-
-function cloneBox(box: AnnotationBox): AnnotationBox {
-  return { ...box };
-}
-
-function mapAnnotationBox(item: {
-  id: number;
-  class_id: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  review_status: string;
-}): AnnotationBox {
-  const status =
-    item.review_status === "draft" || item.review_status === "rejected" || item.review_status === "confirmed"
-      ? item.review_status
-      : "confirmed";
-  return {
-    ...item,
-    local_id: `annotation-${item.id}`,
-    review_status: status,
-    dirty: false,
-  };
-}
-
-function annotationPayload(box: AnnotationBox) {
-  return {
-    class_id: box.class_id,
-    x: box.x,
-    y: box.y,
-    width: box.width,
-    height: box.height,
-    review_status: box.review_status,
-  };
-}
-// Image loading cache and low-priority neighbor prefetch.
-const imageCache = new Map<number, HTMLImageElement>();
-const imageRequests = new Map<number, Promise<HTMLImageElement>>();
-const prefetchQueue = new Map<number, () => Promise<void>>();
-const MAX_CACHED_IMAGES = 16;
-const MAX_PREFETCHING_IMAGES = 2;
-let activePrefetches = 0;
-let prefetchTimer: number | null = null;
-
-function cacheImage(mediaId: number, image: HTMLImageElement): void {
-  if (imageCache.has(mediaId)) imageCache.delete(mediaId);
-  while (imageCache.size >= MAX_CACHED_IMAGES) {
-    const firstKey = imageCache.keys().next().value;
-    if (firstKey === undefined) break;
-    imageCache.delete(firstKey);
-  }
-  imageCache.set(mediaId, image);
-}
-
-function loadImage(mediaId: number): Promise<HTMLImageElement> {
-  const cached = imageCache.get(mediaId);
-  if (cached) {
-    cacheImage(mediaId, cached);
-    return Promise.resolve(cached);
-  }
-
-  const existingRequest = imageRequests.get(mediaId);
-  if (existingRequest) return existingRequest;
-
-  const request = new Promise<HTMLImageElement>((resolve, reject) => {
-    const img = new window.Image();
-    img.decoding = "async";
-    img.onload = () => {
-      cacheImage(mediaId, img);
-      resolve(img);
-    };
-    img.onerror = () => reject(new Error(`Image load failed for media ${mediaId}`));
-    img.src = api.mediaContentUrl(mediaId);
-  }).finally(() => {
-    imageRequests.delete(mediaId);
-  });
-
-  imageRequests.set(mediaId, request);
-  return request;
-}
-
-function schedulePrefetchQueue(): void {
-  if (prefetchTimer !== null) return;
-  const run = () => {
-    prefetchTimer = null;
-    while (activePrefetches < MAX_PREFETCHING_IMAGES && prefetchQueue.size > 0) {
-      const [mediaId, task] = prefetchQueue.entries().next().value as [number, () => Promise<void>];
-      prefetchQueue.delete(mediaId);
-      activePrefetches += 1;
-      task()
-        .catch(() => {
-          // Prefetch is opportunistic; failed images will be retried when selected.
-        })
-        .finally(() => {
-          activePrefetches -= 1;
-          schedulePrefetchQueue();
-        });
-    }
-  };
-
-  const requestIdle = (window as typeof window & {
-    requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
-  }).requestIdleCallback;
-  prefetchTimer = requestIdle ? requestIdle(run, { timeout: 300 }) : window.setTimeout(run, 120);
-}
-
-function prefetchImage(mediaId: number): void {
-  if (imageCache.has(mediaId) || imageRequests.has(mediaId) || prefetchQueue.has(mediaId)) return;
-  prefetchQueue.set(mediaId, () => loadImage(mediaId).then(() => undefined));
-  schedulePrefetchQueue();
-}
-
-function useHtmlImage(mediaId: number | null) {
-  const [image, setImage] = useState<HTMLImageElement | null>(null);
-
-  useEffect(() => {
-    if (mediaId === null) {
-      setImage(null);
-      return;
-    }
-
-    const cached = imageCache.get(mediaId);
-    if (cached) {
-      cacheImage(mediaId, cached);
-      setImage(cached);
-      return;
-    }
-
-    let cancelled = false;
-    loadImage(mediaId)
-      .then((next) => {
-        if (!cancelled) setImage(next);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        console.error("Failed to load image for media", mediaId, err);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [mediaId]);
-
-  return image;
-}
-
-function imageLayout(media: MediaAsset | undefined, canvasWidth = 860, canvasHeight = 520) {
-  const width = media?.width ?? canvasWidth;
-  const height = media?.height ?? canvasHeight;
-  const scale = Math.min(canvasWidth / width, canvasHeight / height);
-  const displayWidth = width * scale;
-  const displayHeight = height * scale;
-  return {
-    x: (canvasWidth - displayWidth) / 2,
-    y: (canvasHeight - displayHeight) / 2,
-    width: displayWidth,
-    height: displayHeight,
-  };
-}
-
-function pointInsideImage(point: { x: number; y: number }, layout: ReturnType<typeof imageLayout>) {
-  return point.x >= layout.x && point.x <= layout.x + layout.width && point.y >= layout.y && point.y <= layout.y + layout.height;
-}
-
-function normalizePoint(point: { x: number; y: number }, layout: ReturnType<typeof imageLayout>) {
-  return {
-    x: clamp((point.x - layout.x) / layout.width, 0, 1),
-    y: clamp((point.y - layout.y) / layout.height, 0, 1),
-  };
-}
-
-function resizeDraftBox(
-  draftBox: AnnotationBox,
-  anchor: { x: number; y: number },
-  point: { x: number; y: number },
-  layout: ReturnType<typeof imageLayout>,
-): AnnotationBox {
-  const normalized = normalizePoint(point, layout);
-  const x2 = clamp(normalized.x, 0, 1);
-  const y2 = clamp(normalized.y, 0, 1);
-  return {
-    ...draftBox,
-    x: Math.min(anchor.x, x2),
-    y: Math.min(anchor.y, y2),
-    width: Math.max(Math.abs(x2 - anchor.x), 0.001),
-    height: Math.max(Math.abs(y2 - anchor.y), 0.001),
-  };
-}
-
-function pixelsToBox(x: number, y: number, width: number, height: number, layout: ReturnType<typeof imageLayout>) {
-  const box = {
-    x: (x - layout.x) / layout.width,
-    y: (y - layout.y) / layout.height,
-    width: width / layout.width,
-    height: height / layout.height,
-  };
-  const nextWidth = clamp(box.width, 0.001, 1);
-  const nextHeight = clamp(box.height, 0.001, 1);
-  return {
-    width: nextWidth,
-    height: nextHeight,
-    x: clamp(box.x, 0, 1 - nextWidth),
-    y: clamp(box.y, 0, 1 - nextHeight),
-  };
-}
-
-function clampBox<T extends AnnotationBox>(box: T): T {
-  const width = clamp(box.width, 0.001, 1);
-  const height = clamp(box.height, 0.001, 1);
-  return {
-    ...box,
-    width,
-    height,
-    x: clamp(box.x, 0, 1 - width),
-    y: clamp(box.y, 0, 1 - height),
-  };
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
-}
-
-function EmptyLine({ text }: { text: string }) {
-  return <p className="empty-line">{text}</p>;
-}
-
-function datasetStats(dataset: Dataset) {
-  try {
-    const stats = JSON.parse(dataset.sample_stats || "{}") as {
-      annotation_status?: string;
-      media_count?: number;
-      annotation_count?: number;
-    };
-    const status = stats.annotation_status === "unlabeled" ? "未标注" : stats.annotation_status === "labeled" ? "已标注" : `v${dataset.version}`;
-    if (stats.media_count !== undefined) {
-      return `${status} · ${stats.media_count} 素材 · ${stats.annotation_count ?? 0} 框`;
-    }
-    return status;
-  } catch {
-    return `v${dataset.version}`;
-  }
-}
-
-function datasetTypeName(type: Dataset["dataset_type"]) {
-  return {
-    public: "公开数据集",
-    user: "用户数据集",
-    fusion: "融合数据集",
-  }[type];
-}
-

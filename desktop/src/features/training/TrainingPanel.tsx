@@ -5,7 +5,7 @@ import { api } from "../../api";
 import { Select } from "../../components/Select";
 import type { Dataset, DatasetTrainingSummary, DeviceStatus, ModelItem, ModelProfile, TrainingJob } from "../../types";
 import { formatBeijingTime } from "../../utils";
-import { useDeviceStatus, useModelProfile, useTrainingJobSSE, useTrainingLog } from "./trainingHooks";
+import { buildTrainingModelPayload, useDeviceStatus, useModelProfile, useTrainingJobSSE, useTrainingLog } from "./trainingHooks";
 
 type TrainingMode = "train" | "resume";
 type ModelChoice = "yolo8n" | "yolo11n" | "yolo26n" | `model:${number}` | "custom";
@@ -157,7 +157,7 @@ export function TrainingPanel({
         device,
         mode,
         run_yolo: runYolo,
-        ...(mode === "resume" ? { resume_job_id: Number(resumeJobId) } : modelPayload(modelChoice, customModelPath)),
+        ...(mode === "resume" ? { resume_job_id: Number(resumeJobId) } : buildTrainingModelPayload(modelChoice, customModelPath)),
         advanced: advancedPayload({ freezeLayers, lr0, patience, workers, seed, cache, augment, optimizer }),
       };
       const job = await api.createTrainingJob(payload);
@@ -544,18 +544,6 @@ function NumberField({ label, value, min, max, disabled, onChange }: { label: st
 
 function TextField({ label, value, disabled, onChange }: { label: string; value: string; disabled?: boolean; onChange: (value: string) => void }) {
   return <label><span>{label}</span><input value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} /></label>;
-}
-
-const MODEL_FILES: Record<string, string> = {
-  yolo8n: "yolo8n.pt",
-  yolo11n: "yolo11n.pt",
-  yolo26n: "yolo26n.pt",
-};
-
-function modelPayload(modelChoice: ModelChoice, customModelPath: string) {
-  if (modelChoice.startsWith("model:")) return { base_model_id: Number(modelChoice.slice("model:".length)) };
-  if (modelChoice === "custom") return { base_model_path: customModelPath };
-  return { base_model_path: MODEL_FILES[modelChoice] ?? "yolo11n.pt" };
 }
 
 function advancedPayload(values: { freezeLayers: number; lr0: string; patience: string; workers: string; seed: string; cache: boolean; augment: boolean; optimizer: string }) {

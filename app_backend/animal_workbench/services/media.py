@@ -81,7 +81,7 @@ def _register_image_asset(
     camera_site: str | None = None,
     source_kind: str = "imported",
     paths: AppPaths | None = None,
-    skip_copy: bool = True,
+    skip_copy: bool = False,
 ) -> dict[str, Any] | None:
     """Register a single image file as a media_asset. Returns the row or None on failure."""
     paths = paths or get_paths()
@@ -134,7 +134,7 @@ def _batch_import_media_assets(
     items: list[tuple[Path, str, str | None]],
     paths: AppPaths,
     *,
-    skip_copy: bool = True,
+    skip_copy: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Hash and copy files in parallel, then write database rows sequentially."""
     if not items:
@@ -232,7 +232,7 @@ def import_media(
     paths: AppPaths | None = None,
     *,
     extract_frames: bool = False,
-    skip_copy: bool = True,
+    skip_copy: bool = False,
 ) -> dict[str, Any]:
     paths = paths or get_paths()
     skipped: list[str] = []
