@@ -2,6 +2,9 @@ import type {
   AnnotationBatch,
   AnnotationItem,
   AnnotationPayload,
+  AssistedAnnotationPredictResult,
+  AssistedAnnotationRuntimeStatus,
+  AssistedAnnotationSettings,
   DatasetJob,
   Dataset,
   DatasetDetail,
@@ -43,6 +46,26 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(payload),
     }),
+  assistedAnnotationSettings: () => request<AssistedAnnotationSettings>("/settings/assisted-annotation"),
+  updateAssistedAnnotationSettings: (payload: AssistedAnnotationSettings) =>
+    request<AssistedAnnotationSettings>("/settings/assisted-annotation", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  startAssistedAnnotation: (payload: { dataset_id: number }) =>
+    request<AssistedAnnotationRuntimeStatus>("/assisted-annotation/start", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  stopAssistedAnnotation: () => request<AssistedAnnotationRuntimeStatus>("/assisted-annotation/stop", { method: "POST" }),
+  predictAssistedAnnotations: (payload: { dataset_id: number; media_asset_ids: number[] }) =>
+    request<{ settings: AssistedAnnotationSettings; loaded: boolean; results: AssistedAnnotationPredictResult[] }>(
+      "/assisted-annotation/predict",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
   summary: () => request<Summary>("/summary"),
   media: () => request<MediaAsset[]>("/media"),
   importMedia: (paths: string[], batchName: string, extractFrames = false) =>
@@ -132,7 +155,15 @@ export const api = {
     }),
   datasetMedia: (
     datasetId: number,
-    params?: { limit?: number; offset?: number; search?: string; class_id?: number; annotation_status?: string; media_asset_id?: number },
+    params?: {
+      limit?: number;
+      offset?: number;
+      search?: string;
+      class_id?: number;
+      annotation_status?: string;
+      media_asset_id?: number;
+      random_seed?: number;
+    },
   ) => request<DatasetDetail>(`/datasets/${datasetId}/media?${new URLSearchParams(
     Object.fromEntries(
       Object.entries(params ?? {}).filter(([_, v]) => v !== undefined).map(([k, v]) => [k, String(v)])

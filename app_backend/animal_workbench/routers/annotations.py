@@ -8,15 +8,63 @@ from ..api_helpers import (
     require_dataset_classes,
     require_media_asset,
     require_media_assets,
+    refresh_annotation_batches,
     require_media_in_dataset,
     sync_annotation_dependents,
 )
+from ..class_colors import class_color_for_index
 from ..db import connect, rows_to_dicts
 from ..repository import current_project_id
 from ..schemas import AnnotationBatchCreate, AnnotationBulkSave, AnnotationSave, AnnotationUpdate
+from ..services.datasets import bind_class_to_dataset, refresh_dataset_counts
 
 
 router = APIRouter()
+
+
+def _class_name_key(value: str) -> str:
+    key = value.strip().lower().replace(" ", "_")
+    key = "".join(ch if ch.isalnum() or ch in "_.-" else "_" for ch in key)
+    key = "_".join(part for part in key.split("_") if part)
+    return key[:120] or f"class_{abs(hash(value)) % 100000}"
+
+
+def _ensure_dataset_class(conn, project_id: int, dataset_id: int, display_name: str) -> int:
+    name = _class_name_key(display_name)
+    existing = conn.execute(
+        "SELECT * FROM classes WHERE project_id = ? AND name = ?",
+        (project_id, name),
+    ).fetchone()
+    if existing:
+        bind_class_to_dataset(conn, project_id, dataset_id, int(existing["id"]))
+        refresh_dataset_counts(conn, project_id, dataset_id)
+        return int(existing["id"])
+
+    row = conn.execute(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM classes WHERE project_id = ?",
+        (project_id,),
+    ).fetchone()
+    sort_order = int(row["next_order"])
+    cursor = conn.execute(
+        """
+        INSERT INTO classes(project_id, name, display_name, color, sort_order)
+        VALUES(?, ?, ?, ?, ?)
+        """,
+        (project_id, name, display_name.strip(), class_color_for_index(sort_order), sort_order),
+    )
+    class_id = int(cursor.lastrowid)
+    bind_class_to_dataset(conn, project_id, dataset_id, class_id)
+    refresh_dataset_counts(conn, project_id, dataset_id)
+    return class_id
+
+
+def _resolve_bulk_class_id(conn, project_id: int, dataset_id: int, class_id: int, class_name: str | None) -> int:
+    if class_id > 0:
+        require_dataset_class(conn, project_id, dataset_id, class_id)
+        return class_id
+    if class_name and class_name.strip():
+        return _ensure_dataset_class(conn, project_id, dataset_id, class_name)
+    raise HTTPException(status_code=422, detail="辅助标注类别缺少名称，无法保存。")
 
 
 @router.post("/annotation-batches")
@@ -50,6 +98,9 @@ def create_annotation_batch(payload: AnnotationBatchCreate) -> dict:
 @router.get("/annotation-batches")
 def list_annotation_batches() -> list[dict]:
     with connect() as conn:
+        project_id = current_project_id(conn)
+        refresh_annotation_batches(conn, project_id)
+        conn.commit()
         return rows_to_dicts(
             conn.execute(
                 """
@@ -58,7 +109,7 @@ def list_annotation_batches() -> list[dict]:
                 WHERE project_id = ?
                 ORDER BY updated_at DESC
                 """,
-                (current_project_id(conn),),
+                (project_id,),
             )
         )
 
@@ -243,7 +294,8 @@ def bulk_save_media_annotations(media_asset_id: int, payload: AnnotationBulkSave
         require_media_asset(conn, project_id, media_asset_id)
         require_dataset(conn, project_id, dataset_id)
         require_media_in_dataset(conn, project_id, dataset_id, media_asset_id)
-        require_dataset_classes(conn, project_id, dataset_id, [item.class_id for item in payload.upserts])
+        positive_class_ids = [item.class_id for item in payload.upserts if item.class_id > 0]
+        require_dataset_classes(conn, project_id, dataset_id, positive_class_ids)
         delete_ids = list(dict.fromkeys(payload.delete_ids))
         upsert_ids = [item.id for item in payload.upserts if item.id is not None]
         all_existing_ids = list(dict.fromkeys([*delete_ids, *upsert_ids]))
@@ -273,6 +325,7 @@ def bulk_save_media_annotations(media_asset_id: int, payload: AnnotationBulkSave
                     (project_id, media_asset_id, *delete_ids),
                 )
             for item in payload.upserts:
+                class_id = _resolve_bulk_class_id(conn, project_id, dataset_id, item.class_id, item.class_name)
                 if item.id is None:
                     conn.execute(
                         """
@@ -284,7 +337,7 @@ def bulk_save_media_annotations(media_asset_id: int, payload: AnnotationBulkSave
                         (
                             project_id,
                             media_asset_id,
-                            item.class_id,
+                            class_id,
                             item.x,
                             item.y,
                             item.width,
@@ -306,7 +359,7 @@ def bulk_save_media_annotations(media_asset_id: int, payload: AnnotationBulkSave
                         WHERE id = ? AND project_id = ? AND media_asset_id = ?
                         """,
                         (
-                            item.class_id,
+                            class_id,
                             item.x,
                             item.y,
                             item.width,

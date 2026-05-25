@@ -24,6 +24,29 @@ export function readableTextColor(hexColor: string): "#0f172a" | "#fff" {
   return luminance > 0.62 ? "#0f172a" : "#fff";
 }
 
+const PREDICTION_COLORS = [
+  "#2979ff",
+  "#ff6d00",
+  "#d500f9",
+  "#00c853",
+  "#ff1744",
+  "#00b8d4",
+  "#ffab00",
+  "#651fff",
+  "#76ff03",
+  "#f50057",
+  "#00e5ff",
+  "#c6ff00",
+];
+
+export function predictedClassColor(className: string): string {
+  let hash = 0;
+  for (let index = 0; index < className.length; index += 1) {
+    hash = (hash * 31 + className.charCodeAt(index)) | 0;
+  }
+  return PREDICTION_COLORS[Math.abs(hash) % PREDICTION_COLORS.length];
+}
+
 export function datasetStats(dataset: Dataset) {
   try {
     const stats = JSON.parse(dataset.sample_stats || "{}") as {

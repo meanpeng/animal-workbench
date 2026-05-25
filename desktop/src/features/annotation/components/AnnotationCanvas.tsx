@@ -5,7 +5,7 @@ import { Image as KonvaImage, Label as KonvaLabel, Layer, Rect, Stage, Tag as Ko
 import type { DatasetDetail, Summary } from "../../../types";
 import type { AnnotationBox } from "../annotationTypes";
 import type { ImageLayout } from "../imageGeometry";
-import { readableTextColor, shortcutLabel } from "../uiUtils";
+import { predictedClassColor, readableTextColor, shortcutLabel } from "../uiUtils";
 
 type AnnotationCanvasProps = {
   datasetClasses: Summary["classes"];
@@ -126,9 +126,13 @@ export function AnnotationCanvas({
             )}
             {displayedBoxes.map((box) => {
               const classItem = classById.get(box.class_id);
-              const color = classItem?.color ?? "#2979ff";
+              const displayName = classItem?.display_name ?? box.predicted_class_name ?? "";
+              const color = classItem?.color ?? predictedClassColor(displayName || String(box.class_id));
               const labelTextColor = readableTextColor(color);
-              const displayName = classItem?.display_name ?? "";
+              const labelText =
+                displayName && box.source === "assistant" && typeof box.confidence === "number"
+                  ? `${displayName} ${box.confidence.toFixed(2)}`
+                  : displayName;
               const px = layout.x + box.x * layout.width;
               const py = layout.y + box.y * layout.height;
               const pw = box.width * layout.width;
@@ -146,7 +150,7 @@ export function AnnotationCanvas({
                     perfectDrawEnabled={false}
                     shadowForStrokeEnabled={false}
                     draggable={!draftBox}
-                    dash={box.id ? undefined : [8, 6]}
+                    dash={box.id ? undefined : [4, 3]}
                     onMouseDown={(event) => {
                       event.cancelBubble = true;
                       onSelectBox(box.local_id);
@@ -156,10 +160,10 @@ export function AnnotationCanvas({
                     onTransformStart={(event) => onTransformStart(box, event)}
                     onTransformEnd={(event) => onTransformEnd(box, event)}
                   />
-                  {displayName ? (
+                  {labelText ? (
                     <KonvaLabel x={px} y={py - 22}>
                       <KonvaTag fill={color} cornerRadius={2} />
-                      <Text text={displayName} fontSize={13} fontStyle="bold" fill={labelTextColor} padding={3} />
+                      <Text text={labelText} fontSize={13} fontStyle="bold" fill={labelTextColor} padding={3} />
                     </KonvaLabel>
                   ) : null}
                 </Fragment>
@@ -168,7 +172,16 @@ export function AnnotationCanvas({
             <Transformer
               ref={transformerRef}
               rotateEnabled={false}
-              enabledAnchors={["top-left", "top-right", "bottom-left", "bottom-right", "middle-left", "middle-right"]}
+              enabledAnchors={[
+                "top-left",
+                "top-center",
+                "top-right",
+                "middle-left",
+                "middle-right",
+                "bottom-left",
+                "bottom-center",
+                "bottom-right",
+              ]}
               borderStroke="#0f172a"
               anchorStroke="#0f172a"
               anchorFill="#ffffff"

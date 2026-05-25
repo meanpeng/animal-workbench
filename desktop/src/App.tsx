@@ -5,6 +5,7 @@ import {
   ChartSpline,
   CirclePlay,
   Database,
+  FileCog,
   FolderOpen,
   LayoutDashboard,
   Play,
@@ -18,6 +19,7 @@ import {
 import { api } from "./api";
 import type {
   AnnotationBatch,
+  AssistedAnnotationSettings,
   Dataset,
   Experiment,
   ModelItem,
@@ -155,7 +157,7 @@ function App() {
             <h1>{viewTitle(view)}</h1>
           </div>
           <div className="topbar-actions">
-            <button className="icon-button" title="存储设置" onClick={() => setSettingsOpen(true)}>
+            <button className="icon-button" title="全局设置" onClick={() => setSettingsOpen(true)}>
               <Settings2 size={18} />
             </button>
           </div>
@@ -166,13 +168,13 @@ function App() {
         {view === "annotate" && <Annotate datasets={datasets} initialDatasetId={annotateTargetRef.current?.datasetId ?? null} initialMediaId={annotateTargetRef.current?.mediaId ?? null} onTargetConsumed={() => { annotateTargetRef.current = null; }} />}
         {view === "training" && <TrainingPanel datasets={datasets} jobs={jobs} models={models} onRefresh={refresh} />}
         {view === "results" && <Results models={models} experiments={experiments} />}
-        {settingsOpen ? <StorageSettingsModal onClose={() => setSettingsOpen(false)} onSaved={refresh} /> : null}
+        {settingsOpen ? <GlobalSettingsModal onClose={() => setSettingsOpen(false)} onSaved={refresh} /> : null}
       </main>
     </div>
   );
 }
 
-function StorageSettingsModal({
+function GlobalSettingsModal({
   onClose,
   onSaved,
 }: {
@@ -180,15 +182,24 @@ function StorageSettingsModal({
   onSaved: () => Promise<void>;
 }) {
   const [settings, setSettings] = useState<StorageSettings | null>(null);
+  const [assistSettings, setAssistSettings] = useState<AssistedAnnotationSettings>({
+    enabled: false,
+    model_path: "",
+    confidence: 0.25,
+    preload_radius: 3,
+    image_size: 640,
+    device: "auto",
+  });
   const [dataRoot, setDataRoot] = useState("");
-  const [message, setMessage] = useState("公开数据集、训练导出和视频抽帧都会存到这里。");
+  const [message, setMessage] = useState("公开数据集、训练导出、视频抽帧和辅助标注配置都会保存在这里。");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    api.storageSettings()
-      .then((next) => {
-        setSettings(next);
-        setDataRoot(next.data_root);
+    Promise.all([api.storageSettings(), api.assistedAnnotationSettings()])
+      .then(([nextStorage, nextAssist]) => {
+        setSettings(nextStorage);
+        setDataRoot(nextStorage.data_root);
+        setAssistSettings(nextAssist);
       })
       .catch((error) => setMessage(error instanceof Error ? error.message : "读取设置失败"));
   }, []);
@@ -198,14 +209,31 @@ function StorageSettingsModal({
     if (selected[0]) setDataRoot(selected[0]);
   };
 
+  const pickModel = async () => {
+    const selected = await invoke<string | null>("pick_model_file");
+    if (selected) {
+      setAssistSettings((current) => ({ ...current, model_path: selected, enabled: true }));
+    }
+  };
+
   const save = async () => {
     if (!dataRoot.trim()) return;
     setBusy(true);
     try {
-      const next = await api.updateStorageSettings({ data_root: dataRoot.trim() });
+      const [next] = await Promise.all([
+        api.updateStorageSettings({ data_root: dataRoot.trim() }),
+        api.updateAssistedAnnotationSettings({
+          ...assistSettings,
+          model_path: assistSettings.model_path.trim(),
+          confidence: Number(assistSettings.confidence),
+          preload_radius: Number(assistSettings.preload_radius),
+          image_size: Number(assistSettings.image_size),
+          device: assistSettings.device.trim() || "auto",
+        }),
+      ]);
       setSettings(next);
       setDataRoot(next.data_root);
-      setMessage("已保存。之后的新公开数据集、训练导出和抽帧会写入新目录；已有文件不会自动搬迁。");
+      setMessage("已保存。辅助标注设置会在下一次进入标注详情页时生效。");
       await onSaved();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "保存失败");
@@ -218,20 +246,23 @@ function StorageSettingsModal({
     <div className="modal-overlay">
       <div className="modal-dialog storage-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
         <div className="modal-title-row">
-          <h3>存储设置</h3>
+          <h3>全局设置</h3>
           <button className="icon-button-sm" onClick={onClose} title="关闭">
             <X size={16} />
           </button>
         </div>
-        <label className="storage-field">
-          <span>数据集大文件目录</span>
-          <div className="path-input-row">
-            <input value={dataRoot} onChange={(event) => setDataRoot(event.target.value)} placeholder="选择 C 盘以外的目录" />
-            <button onClick={() => void pickFolder()} disabled={busy} title="选择文件夹">
-              <FolderOpen size={16} />
-            </button>
-          </div>
-        </label>
+        <section className="global-settings-section">
+          <h4>存储设置</h4>
+          <label className="storage-field">
+            <span>数据集大文件目录</span>
+            <div className="path-input-row">
+              <input value={dataRoot} onChange={(event) => setDataRoot(event.target.value)} placeholder="选择 C 盘以外的目录" />
+              <button onClick={() => void pickFolder()} disabled={busy} title="选择文件夹">
+                <FolderOpen size={16} />
+              </button>
+            </div>
+          </label>
+        </section>
         {settings ? (
           <div className="storage-paths">
             <span>数据库：{settings.db_path}</span>
@@ -239,6 +270,75 @@ function StorageSettingsModal({
             <span>训练缓存：{settings.runtime_dir}</span>
           </div>
         ) : null}
+        <section className="global-settings-section">
+          <div className="settings-section-title">
+            <h4>辅助标注</h4>
+            <label className="checkbox-row settings-toggle">
+              <input
+                type="checkbox"
+                checked={assistSettings.enabled}
+                onChange={(event) => setAssistSettings((current) => ({ ...current, enabled: event.target.checked }))}
+              />
+              <span>进入标注详情页时自动预标注</span>
+            </label>
+          </div>
+          <label className="storage-field">
+            <span>YOLO 模型位置</span>
+            <div className="path-input-row">
+              <input
+                value={assistSettings.model_path}
+                onChange={(event) => setAssistSettings((current) => ({ ...current, model_path: event.target.value }))}
+                placeholder="选择已训练好的 .pt 权重文件"
+              />
+              <button onClick={() => void pickModel()} disabled={busy} title="选择模型文件">
+                <FileCog size={16} />
+              </button>
+            </div>
+          </label>
+          <div className="settings-grid">
+            <label className="storage-field">
+              <span>置信度阈值</span>
+              <input
+                type="number"
+                min="0.01"
+                max="0.99"
+                step="0.01"
+                value={assistSettings.confidence}
+                onChange={(event) => setAssistSettings((current) => ({ ...current, confidence: Number(event.target.value) }))}
+              />
+            </label>
+            <label className="storage-field">
+              <span>前后预标注张数</span>
+              <input
+                type="number"
+                min="0"
+                max="20"
+                step="1"
+                value={assistSettings.preload_radius}
+                onChange={(event) => setAssistSettings((current) => ({ ...current, preload_radius: Number(event.target.value) }))}
+              />
+            </label>
+            <label className="storage-field">
+              <span>推理尺寸</span>
+              <input
+                type="number"
+                min="128"
+                max="2048"
+                step="32"
+                value={assistSettings.image_size}
+                onChange={(event) => setAssistSettings((current) => ({ ...current, image_size: Number(event.target.value) }))}
+              />
+            </label>
+            <label className="storage-field">
+              <span>设备</span>
+              <input
+                value={assistSettings.device}
+                onChange={(event) => setAssistSettings((current) => ({ ...current, device: event.target.value }))}
+                placeholder="auto / cpu / 0"
+              />
+            </label>
+          </div>
+        </section>
         <p className="helper-text">{message}</p>
         <div className="modal-actions">
           <button onClick={onClose}>取消</button>

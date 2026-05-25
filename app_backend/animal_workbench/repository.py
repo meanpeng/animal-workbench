@@ -47,11 +47,34 @@ def list_dataset_classes(conn: sqlite3.Connection, project_id: int, dataset_id: 
 
 
 def dashboard_summary(conn: sqlite3.Connection, project_id: int) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    counts["media_assets"] = int(
+        conn.execute(
+            """
+            SELECT COUNT(DISTINCT da.media_asset_id) AS cnt
+            FROM dataset_assets da
+            JOIN datasets d ON d.id = da.dataset_id
+            WHERE d.project_id = ?
+            """,
+            (project_id,),
+        ).fetchone()["cnt"]
+    )
+    counts["annotations"] = int(
+        conn.execute(
+            """
+            SELECT COUNT(DISTINCT a.id) AS cnt
+            FROM annotations a
+            JOIN dataset_assets da ON da.media_asset_id = a.media_asset_id
+            JOIN datasets d ON d.id = da.dataset_id AND d.project_id = ?
+            JOIN dataset_classes dc ON dc.dataset_id = d.id AND dc.class_id = a.class_id
+            WHERE a.project_id = ?
+            """,
+            (project_id, project_id),
+        ).fetchone()["cnt"]
+    )
     tables = [
-        ("media_assets", "media_assets"),
         ("datasets", "datasets"),
         ("annotation_batches", "annotation_batches"),
-        ("annotations", "annotations"),
         ("models", "models"),
         ("training_jobs", "training_jobs"),
         ("experiments", "experiments"),
@@ -65,7 +88,7 @@ def dashboard_summary(conn: sqlite3.Connection, project_id: int) -> dict[str, An
     for key, _ in tables:
         params.extend([key, project_id])
     count_rows = conn.execute(union_parts, params).fetchall()
-    counts = {row["key"]: int(row["cnt"]) for row in count_rows}
+    counts.update({row["key"]: int(row["cnt"]) for row in count_rows})
 
     recent_jobs = rows_to_dicts(
         conn.execute(

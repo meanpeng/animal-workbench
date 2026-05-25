@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
-import type { Dataset, DatasetDetail, Summary } from "../../types";
+import type { AssistedAnnotationPrediction, AssistedAnnotationSettings, Dataset, DatasetDetail, Summary } from "../../types";
 import { cloneBox, makeLocalId, mapAnnotationBox } from "./annotationBoxUtils";
 import type { AnnotationBox, AnnotationSnapshot } from "./annotationTypes";
 import { AnnotationCanvas } from "./components/AnnotationCanvas";
@@ -14,6 +14,10 @@ import { useResizableCanvas } from "./hooks/useResizableCanvas";
 import { clampBox, imageLayout, normalizePoint, pixelsToBox, pointInsideImage, resizeDraftBox } from "./imageGeometry";
 
 const MEDIA_PAGE_SIZE = 100;
+
+function cleanPredictionClassName(value: string) {
+  return value.trim() || "未命名类别";
+}
 
 export function Annotate({
   datasets,
@@ -38,10 +42,13 @@ export function Annotate({
   const [loadingMoreMedia, setLoadingMoreMedia] = useState(false);
   const mediaListRef = useRef<HTMLDivElement>(null);
   const mediaRequestSeqRef = useRef(0);
+  const previousDatasetIdRef = useRef<number | null>(null);
 
   // ── filters ──
   const [statusFilter, setStatusFilter] = useState<"all" | "annotated" | "unannotated">("all");
   const [classFilterId, setClassFilterId] = useState<number | null>(null);
+  const [randomOrderEnabled, setRandomOrderEnabled] = useState(false);
+  const [randomOrderSeed, setRandomOrderSeed] = useState(() => Math.floor(Math.random() * 2147483647));
 
   // ── annotation state ──
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -64,6 +71,9 @@ export function Annotate({
   const [addingClass, setAddingClass] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [draftMediaIds, setDraftMediaIds] = useState<Set<number>>(new Set());
+  const [predictedMediaIds, setPredictedMediaIds] = useState<Set<number>>(new Set());
+  const [predictionEmptyMediaIds, setPredictionEmptyMediaIds] = useState<Set<number>>(new Set());
+  const [loadedAnnotationMediaId, setLoadedAnnotationMediaId] = useState<number | null>(null);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [unsavedModalOpen, setUnsavedModalOpen] = useState(false);
   const [pendingNavAction, setPendingNavAction] = useState<(() => void) | null>(null);
@@ -73,6 +83,13 @@ export function Annotate({
   const imageItems = useMemo(() => {
     return datasetMedia.filter((item) => item.media_type === "image");
   }, [datasetMedia]);
+  const orderedDatasetClasses = useMemo(() => {
+    const classCounts = currentDatasetStats?.class_counts ?? {};
+    return [...datasetClasses].sort((a, b) => {
+      const countDiff = (classCounts[b.display_name] ?? 0) - (classCounts[a.display_name] ?? 0);
+      return countDiff !== 0 ? countDiff : a.sort_order - b.sort_order;
+    });
+  }, [currentDatasetStats, datasetClasses]);
   const hasMoreMedia = datasetMedia.length < datasetMediaTotal;
 
   const selected = useMemo(
@@ -81,6 +98,92 @@ export function Annotate({
   );
   const image = useHtmlImage(selected?.id ?? null);
   const transformerRef = useRef<any>(null);
+  const [assistedActive, setAssistedActive] = useState(false);
+  const [assistedLoading, setAssistedLoading] = useState(false);
+  const [assistedSettings, setAssistedSettings] = useState<AssistedAnnotationSettings | null>(null);
+  const assistedPredictedMediaIdsRef = useRef<Set<number>>(new Set());
+  const [predictionFailedMediaIds, setPredictionFailedMediaIds] = useState<Set<number>>(new Set());
+  const provisionalClassIdsRef = useRef<Map<string, number>>(new Map());
+  const nextProvisionalClassIdRef = useRef(-1);
+
+  const imageItemsRef = useRef(imageItems);
+  imageItemsRef.current = imageItems;
+  const predictionInFlightRef = useRef<Set<number>>(new Set());
+
+  const provisionalClassId = useCallback((className: string) => {
+    const key = cleanPredictionClassName(className).toLowerCase();
+    const existing = provisionalClassIdsRef.current.get(key);
+    if (existing) return existing;
+    const next = nextProvisionalClassIdRef.current;
+    nextProvisionalClassIdRef.current -= 1;
+    provisionalClassIdsRef.current.set(key, next);
+    return next;
+  }, []);
+
+  const predictionBoxes = useCallback(
+    (predictions: AssistedAnnotationPrediction[]): AnnotationBox[] =>
+      predictions
+        .filter((prediction) => prediction.width > 0 && prediction.height > 0)
+        .map((prediction) => {
+          const className = cleanPredictionClassName(prediction.class_name);
+          return clampBox({
+            local_id: makeLocalId(),
+            class_id: prediction.class_id ?? provisionalClassId(className),
+            predicted_class_name: prediction.class_id ? undefined : className,
+            confidence: prediction.confidence,
+            source: "assistant",
+            x: prediction.x,
+            y: prediction.y,
+            width: prediction.width,
+            height: prediction.height,
+            review_status: "draft",
+          });
+        }),
+    [provisionalClassId],
+  );
+
+  useEffect(() => {
+    assistedPredictedMediaIdsRef.current.clear();
+    predictionInFlightRef.current.clear();
+    setPredictionFailedMediaIds(new Set());
+    setPredictionEmptyMediaIds(new Set());
+    setAssistedActive(false);
+    setAssistedSettings(null);
+    setAssistedLoading(Boolean(selectedDatasetId));
+    if (!selectedDatasetId) {
+      void api.stopAssistedAnnotation();
+      return;
+    }
+    setMessage("正在加载辅助标注模型...");
+
+    let cancelled = false;
+    api
+      .startAssistedAnnotation({ dataset_id: selectedDatasetId })
+      .then((status) => {
+        if (cancelled) return;
+        setAssistedSettings(status.settings ?? null);
+        const isActive = Boolean(status.enabled && status.loaded);
+        setAssistedActive(isActive);
+        setAssistedLoading(false);
+        if (isActive) {
+          setMessage("辅助标注模型已加载，将在浏览图片时生成预标注草稿。");
+        }
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setAssistedActive(false);
+        setAssistedLoading(false);
+        setMessage(error instanceof Error ? error.message : "辅助标注模型加载失败");
+      });
+
+    return () => {
+      cancelled = true;
+      assistedPredictedMediaIdsRef.current.clear();
+      setAssistedLoading(false);
+      setAssistedActive(false);
+      void api.stopAssistedAnnotation();
+    };
+  }, [selectedDatasetId]);
 
   // ── prefetch adjacent images for instant arrow-key navigation ──
   useEffect(() => {
@@ -102,8 +205,9 @@ export function Annotate({
       class_id: classFilterId ?? undefined,
       annotation_status: statusFilter === "all" ? undefined : statusFilter,
       media_asset_id: mediaAssetId,
+      random_seed: randomOrderEnabled ? randomOrderSeed : undefined,
     }),
-    [classFilterId, statusFilter],
+    [classFilterId, randomOrderEnabled, randomOrderSeed, statusFilter],
   );
 
   const resetDraftState = () => {
@@ -123,6 +227,8 @@ export function Annotate({
       setSelectedId(null);
       setStatusFilter("all");
       setClassFilterId(null);
+      setRandomOrderEnabled(false);
+      previousDatasetIdRef.current = null;
       setBoxes([]);
       resetDraftState();
       setDeletedIds([]);
@@ -131,10 +237,13 @@ export function Annotate({
       setFuture([]);
       draftsRef.current.clear();
       setDraftMediaIds(new Set());
+      setLoadedAnnotationMediaId(null);
       return;
     }
 
     let cancelled = false;
+    const datasetChanged = previousDatasetIdRef.current !== selectedDatasetId;
+    previousDatasetIdRef.current = selectedDatasetId;
     const requestSeq = ++mediaRequestSeqRef.current;
     setDatasetMedia([]);
     setDatasetMediaTotal(0);
@@ -145,8 +254,11 @@ export function Annotate({
     setSelectedBoxKey(null);
     setHistory([]);
     setFuture([]);
-    draftsRef.current.clear();
-    setDraftMediaIds(new Set());
+    if (datasetChanged) {
+      draftsRef.current.clear();
+      setDraftMediaIds(new Set());
+    }
+    setLoadedAnnotationMediaId(null);
     setLoadingDataset(true);
     setLoadingMoreMedia(false);
     setMessage("\u6b63\u5728\u52a0\u8f7d\u6570\u636e\u96c6...");
@@ -242,12 +354,12 @@ export function Annotate({
 
     // ── keep activeClassId in sync with dataset classes ──
   useEffect(() => {
-    if (datasetClasses.length === 0) {
+    if (orderedDatasetClasses.length === 0) {
       setActiveClassId(0);
-    } else if (!datasetClasses.find((c) => c.id === activeClassId)) {
-      setActiveClassId(datasetClasses[0].id);
+    } else if (!orderedDatasetClasses.find((c) => c.id === activeClassId)) {
+      setActiveClassId(orderedDatasetClasses[0].id);
     }
-  }, [datasetClasses, activeClassId]);
+  }, [orderedDatasetClasses, activeClassId]);
 
   // ── load annotations for selected image ──
   useEffect(() => {
@@ -258,16 +370,24 @@ export function Annotate({
     }
     const draft = draftsRef.current.get(selected.id);
     if (draft) {
+      setPredictedMediaIds((current) => {
+        if (!current.has(selected.id)) return current;
+        const next = new Set(current);
+        next.delete(selected.id);
+        return next;
+      });
       setBoxes(draft.boxes.map(cloneBox));
       setDeletedIds([...draft.deletedIds]);
       setSelectedBoxKey(null);
       setHistory([]);
       setFuture([]);
       setSaveStatus("idle");
+      setLoadedAnnotationMediaId(selected.id);
       setMessage("已加载草稿标注，可以继续编辑或保存。");
       return;
     }
     let cancelled = false;
+    setLoadedAnnotationMediaId(null);
     setMessage("\u6b63\u5728\u52a0\u8f7d\u6807\u6ce8...");
     api
       .annotationsForMedia(selected.id, selectedDatasetId ?? undefined)
@@ -283,6 +403,7 @@ export function Annotate({
           setHistory([]);
           setFuture([]);
           setSaveStatus("idle");
+          setLoadedAnnotationMediaId(selected.id);
           setMessage("\u5df2\u52a0\u8f7d\u6807\u6ce8\uff0c\u53ef\u4ee5\u7ee7\u7eed\u8865\u5145\u6216\u4fee\u8ba2\u3002");
         }
       })
@@ -305,6 +426,33 @@ export function Annotate({
   const deletedIdsRef = useRef(deletedIds);
   deletedIdsRef.current = deletedIds;
   const draftsRef = useRef<Map<number, { boxes: AnnotationBox[]; deletedIds: number[] }>>(new Map());
+
+  useEffect(() => {
+    setPredictedMediaIds((current) => {
+      const next = new Set<number>();
+      for (const id of current) {
+        if (draftMediaIds.has(id) || predictionEmptyMediaIds.has(id)) next.add(id);
+      }
+      return next.size === current.size ? current : next;
+    });
+  }, [draftMediaIds, predictionEmptyMediaIds]);
+
+  useEffect(() => {
+    const annotatedIds = new Set(
+      datasetMedia
+        .filter((item) => item.annotation_status === "annotated" || item.annotation_count > 0)
+        .map((item) => item.id),
+    );
+    if (annotatedIds.size === 0) return;
+    setPredictedMediaIds((current) => {
+      const next = new Set([...current].filter((id) => !annotatedIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+    setPredictionEmptyMediaIds((current) => {
+      const next = new Set([...current].filter((id) => !annotatedIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [datasetMedia]);
 
   useEffect(() => {
     return () => {
@@ -339,6 +487,141 @@ export function Annotate({
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
 
+  useEffect(() => {
+    if (!assistedActive || !assistedSettings || !selectedDatasetId || !selected) return;
+    const currentItems = imageItemsRef.current;
+    const selectedIndex = currentItems.findIndex((item) => item.id === selected.id);
+    if (selectedIndex === -1) return;
+    const radius = Math.max(0, Math.min(20, assistedSettings.preload_radius));
+    const start = Math.max(0, selectedIndex - radius);
+    const end = Math.min(currentItems.length, selectedIndex + radius + 1);
+
+    const freshItems = currentItems
+      .slice(start, end)
+      .filter((item) => item.annotation_count === 0)
+      .filter((item) => !draftsRef.current.has(item.id))
+      .filter((item) => !assistedPredictedMediaIdsRef.current.has(item.id))
+      .filter((item) => !predictionInFlightRef.current.has(item.id));
+
+    const selectedReady = loadedAnnotationMediaId === selected.id;
+    const selectedFresh = freshItems.find((item) => item.id === selected.id);
+
+    const surroundingIds = freshItems
+      .filter((item) => item.id !== selected.id)
+      .map((item) => item.id);
+
+    const candidates: number[] = [];
+    if (selectedFresh && selectedReady) {
+      candidates.push(selected.id);
+    }
+    for (const id of surroundingIds) {
+      candidates.push(id);
+    }
+    if (candidates.length === 0) return;
+
+    for (const id of candidates) {
+      predictionInFlightRef.current.add(id);
+    }
+
+    api
+      .predictAssistedAnnotations({ dataset_id: selectedDatasetId, media_asset_ids: candidates })
+      .then((payload) => {
+        let draftChanged = false;
+        const newPredictedIds: number[] = [];
+        const emptyPredictedIds: number[] = [];
+        const failedIds: number[] = [];
+        const successfulIds: number[] = [];
+        for (const result of payload.results) {
+          predictionInFlightRef.current.delete(result.media_asset_id);
+          if (result.error) {
+            failedIds.push(result.media_asset_id);
+            if (result.media_asset_id === selectedIdRef.current) {
+              setMessage(`辅助标注失败：${result.error}`);
+            }
+            continue;
+          }
+
+          assistedPredictedMediaIdsRef.current.add(result.media_asset_id);
+          successfulIds.push(result.media_asset_id);
+
+          const mediaItem = imageItemsRef.current.find((item) => item.id === result.media_asset_id);
+          if (!mediaItem || mediaItem.annotation_count > 0) continue;
+
+          const predictedBoxes = predictionBoxes(result.predictions);
+          if (predictedBoxes.length === 0) {
+            emptyPredictedIds.push(result.media_asset_id);
+            if (result.media_asset_id === selectedIdRef.current && boxesRef.current.length === 0 && !draftBoxRef.current) {
+              setMessage("辅助标注已完成，预测无框。");
+            }
+            continue;
+          }
+
+          if (result.media_asset_id === selectedIdRef.current) {
+            if (boxesRef.current.length === 0 && !draftBoxRef.current && !draftsRef.current.has(result.media_asset_id)) {
+              setBoxes(predictedBoxes);
+              setDeletedIds([]);
+              setSelectedBoxKey(null);
+              setHistory([]);
+              setFuture([]);
+              setSaveStatus("idle");
+              setMessage(`辅助标注已生成 ${predictedBoxes.length} 个草稿框，请检查后保存。`);
+            }
+          } else if (!draftsRef.current.has(result.media_asset_id)) {
+            draftsRef.current.set(result.media_asset_id, { boxes: predictedBoxes, deletedIds: [] });
+            newPredictedIds.push(result.media_asset_id);
+            draftChanged = true;
+          }
+        }
+        if (failedIds.length > 0) {
+          setPredictionFailedMediaIds((current) => {
+            const next = new Set(current);
+            for (const id of failedIds) next.add(id);
+            return next;
+          });
+        }
+        if (successfulIds.length > 0) {
+          setPredictionFailedMediaIds((current) => {
+            let changed = false;
+            const next = new Set(current);
+            for (const id of successfulIds) {
+              if (next.delete(id)) changed = true;
+            }
+            return changed ? next : current;
+          });
+        }
+        if (draftChanged) {
+          setDraftMediaIds(new Set(draftsRef.current.keys()));
+        }
+        if (newPredictedIds.length > 0 || emptyPredictedIds.length > 0) {
+          setPredictedMediaIds((current) => {
+            const next = new Set(current);
+            for (const id of newPredictedIds) next.add(id);
+            for (const id of emptyPredictedIds) next.add(id);
+            return next;
+          });
+        }
+        if (emptyPredictedIds.length > 0 || newPredictedIds.length > 0) {
+          setPredictionEmptyMediaIds((current) => {
+            const next = new Set(current);
+            for (const id of emptyPredictedIds) next.add(id);
+            for (const id of newPredictedIds) next.delete(id);
+            return next;
+          });
+        }
+      })
+      .catch((error) => {
+        for (const id of candidates) {
+          predictionInFlightRef.current.delete(id);
+        }
+        setPredictionFailedMediaIds((current) => {
+          const next = new Set(current);
+          for (const id of candidates) next.add(id);
+          return next;
+        });
+        setMessage(error instanceof Error ? error.message : "辅助标注预测失败");
+      });
+  }, [assistedActive, assistedSettings, loadedAnnotationMediaId, predictionBoxes, selected, selectedDatasetId]);
+
   const snapshot = (): AnnotationSnapshot => ({
     boxes: boxes.map(cloneBox),
     deletedIds: [...deletedIds],
@@ -364,8 +647,10 @@ export function Annotate({
     if (!currentId) return;
     let currentBoxes = boxesRef.current;
     const currentDraft = draftBoxRef.current;
+    let addedDraft = false;
     if (currentDraft && currentDraft.width >= 0.005 && currentDraft.height >= 0.005) {
       currentBoxes = [...currentBoxes, currentDraft];
+      addedDraft = true;
     }
     if (currentDraft) {
       draftBoxRef.current = null;
@@ -374,11 +659,33 @@ export function Annotate({
       setDraftBox(null);
     }
     const currentDeleted = deletedIdsRef.current;
+    const hasChanges =
+      currentBoxes.some((box) => !box.id || box.dirty) || currentDeleted.length > 0 || addedDraft;
+    if (!hasChanges) {
+      const currentMedia = imageItemsRef.current.find((item) => item.id === currentId);
+      if (currentMedia?.annotation_status === "annotated" || (currentMedia?.annotation_count ?? 0) > 0) {
+        draftsRef.current.delete(currentId);
+        setDraftMediaIds(new Set(draftsRef.current.keys()));
+        return;
+      }
+    }
     draftsRef.current.set(currentId, {
       boxes: currentBoxes.map(cloneBox),
       deletedIds: [...currentDeleted],
     });
     setDraftMediaIds(new Set(draftsRef.current.keys()));
+    setPredictedMediaIds((current) => {
+      if (!current.has(currentId)) return current;
+      const next = new Set(current);
+      next.delete(currentId);
+      return next;
+    });
+    setPredictionEmptyMediaIds((current) => {
+      if (!current.has(currentId)) return current;
+      const next = new Set(current);
+      next.delete(currentId);
+      return next;
+    });
   };
 
   const selectMedia = (mediaId: number) => {
@@ -514,7 +821,7 @@ export function Annotate({
   };
 
   useAnnotationShortcuts({
-    classes: datasetClasses,
+    classes: orderedDatasetClasses,
     imageItems,
     selectedId,
     selectedBoxKey,
@@ -538,6 +845,19 @@ export function Annotate({
     saveCurrentAsDraft();
     setClassFilterId(newId);
     setSelectedId(null);
+  };
+
+  const handleRandomOrderToggle = () => {
+    saveCurrentAsDraft();
+    setRandomOrderEnabled((current) => {
+      const next = !current;
+      if (next) {
+        setRandomOrderSeed(Math.floor(Math.random() * 2147483647));
+      }
+      return next;
+    });
+    setSelectedId(null);
+    if (mediaListRef.current) mediaListRef.current.scrollTop = 0;
   };
 
   const handleDatasetBack = () => {
@@ -612,6 +932,12 @@ export function Annotate({
     setMessage("\u6807\u6ce8\u6846\u5c3a\u5bf8\u5df2\u66f4\u65b0\u3002");
   };
 
+  const refreshDatasetClasses = useCallback(async () => {
+    if (!selectedDatasetId) return;
+    const nextClasses = await api.datasetClasses(selectedDatasetId);
+    setDatasetClasses(nextClasses);
+  }, [selectedDatasetId]);
+
   const { saveAll, doSaveCurrent, doSaveAllDrafts } = useAnnotationSave({
     selected,
     selectedDatasetId,
@@ -627,6 +953,8 @@ export function Annotate({
     setSaveStatus,
     setSaveModalOpen,
     setMessage,
+    setDatasetMedia,
+    onSaved: refreshDatasetClasses,
   });
 
   // ── dataset selector view ──
@@ -636,6 +964,7 @@ export function Annotate({
 
   const selectedDataset = datasets.find((d) => d.id === selectedDatasetId);
   const totalAnnotated = currentDatasetStats?.annotated_media ?? datasetMedia.filter((m) => m.annotation_count > 0).length;
+  const canvasMessage = assistedLoading ? "正在加载辅助标注模型..." : message;
 
   return (
     <section className="annotation-layout">
@@ -646,7 +975,7 @@ export function Annotate({
         totalMedia={currentDatasetStats?.total_media ?? datasetMedia.length}
         statusFilter={statusFilter}
         onStatusFilterChange={handleStatusFilterChange}
-        datasetClasses={datasetClasses}
+        datasetClasses={orderedDatasetClasses}
         classFilterId={classFilterId}
         onClassFilterChange={handleClassFilterChange}
         mediaListRef={mediaListRef}
@@ -655,6 +984,9 @@ export function Annotate({
         imageItems={imageItems}
         selectedMediaId={selected?.id}
         draftMediaIds={draftMediaIds}
+        predictedMediaIds={predictedMediaIds}
+        predictionEmptyMediaIds={predictionEmptyMediaIds}
+        predictionFailedMediaIds={predictionFailedMediaIds}
         onSelectMedia={selectMedia}
         loadingMoreMedia={loadingMoreMedia}
         hasMoreMedia={hasMoreMedia}
@@ -666,7 +998,7 @@ export function Annotate({
 
       <div className="annotator">
         <AnnotationCanvas
-          datasetClasses={datasetClasses}
+          datasetClasses={orderedDatasetClasses}
           selectedBox={selectedBox}
           activeClassId={activeClassId}
           onChangeClass={changeClass}
@@ -694,7 +1026,7 @@ export function Annotate({
           onTransformStart={handleTransformStart}
           onTransformEnd={handleTransformEnd}
           saveStatus={saveStatus}
-          message={message}
+          message={canvasMessage}
           onUndo={undo}
           canUndo={history.length > 0}
           onRedo={redo}
@@ -702,6 +1034,21 @@ export function Annotate({
           onDeleteSelected={deleteSelected}
           onSave={() => void saveAll()}
         />
+
+        <div className="annotation-utility-toolbar" aria-label="标注工具栏">
+          <label className="annotation-switch-row">
+            <span>随机排序</span>
+            <input
+              type="checkbox"
+              checked={randomOrderEnabled}
+              onChange={handleRandomOrderToggle}
+              disabled={loadingDataset || loadingMoreMedia}
+            />
+            <span className="annotation-switch-track" aria-hidden="true">
+              <span className="annotation-switch-thumb" />
+            </span>
+          </label>
+        </div>
 
         <AnnotationModals
           addClassOpen={addClassOpen}

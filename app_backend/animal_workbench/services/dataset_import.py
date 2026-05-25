@@ -10,6 +10,7 @@ from typing import Any
 from ..class_colors import class_color_for_index
 from ..config import AppPaths, get_paths
 from ..repository import json_dumps
+from ..api_helpers import refresh_annotation_batches
 from .datasets import add_media_to_dataset, bind_classes_to_dataset
 from .annotation_parsers import ParsedDataset, parse_dataset_folder
 from .dataset_jobs import JobReporter
@@ -431,6 +432,7 @@ def import_parsed_labeled_dataset(
     else:
         dataset = None
 
+    batch = None
     saved = 0
     skipped_duplicate_annotations = 0
     if reporter:
@@ -479,9 +481,11 @@ def import_parsed_labeled_dataset(
         bind_classes_to_dataset(conn, project_id, int(dataset["id"]), list(class_ids.values()))
         refresh_dataset_sample_stats(conn, project_id, int(dataset["id"]), parsed.format, "labeled")
         dataset = dict(conn.execute("SELECT * FROM datasets WHERE id = ?", (dataset["id"],)).fetchone())
+        batch = create_annotation_batch(conn, project_id, f"{dataset['name']} 已导入标注", list(dict.fromkeys(media_ids)))
     conn.commit()
     return {
         "dataset": dataset,
+        "batch": batch,
         "media_ids": list(dict.fromkeys(media_ids)),
         "linked_media_count": len(set(media_ids)) if dataset else 0,
         "media_count": len(set(media_ids)),
@@ -650,4 +654,5 @@ def create_annotation_batch(conn: sqlite3.Connection, project_id: int, name: str
         "INSERT OR IGNORE INTO annotation_batch_items(batch_id, media_asset_id) VALUES(?, ?)",
         [(batch_id, media_id) for media_id in media_asset_ids],
     )
+    refresh_annotation_batches(conn, project_id, [batch_id])
     return dict(conn.execute("SELECT * FROM annotation_batches WHERE id = ?", (batch_id,)).fetchone())

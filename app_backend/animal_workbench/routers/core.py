@@ -7,7 +7,11 @@ from fastapi import APIRouter, HTTPException
 from ..config import ensure_paths, get_paths, set_data_root
 from ..db import connect
 from ..repository import current_project, current_project_id, dashboard_summary, list_classes
-from ..schemas import ProjectCreate, StorageSettingsUpdate
+from ..schemas import AssistedAnnotationSettingsUpdate, ProjectCreate, StorageSettingsUpdate
+from ..services.assisted_annotation import (
+    assisted_annotation_settings,
+    save_assisted_annotation_settings,
+)
 
 
 router = APIRouter()
@@ -33,6 +37,12 @@ def get_storage_settings() -> dict:
     }
 
 
+@router.get("/settings/assisted-annotation")
+def get_assisted_annotation_settings() -> dict:
+    with connect() as conn:
+        return assisted_annotation_settings(conn)
+
+
 @router.put("/settings/storage")
 def update_storage_settings(payload: StorageSettingsUpdate) -> dict:
     data_root = Path(payload.data_root).expanduser().resolve()
@@ -41,6 +51,12 @@ def update_storage_settings(payload: StorageSettingsUpdate) -> dict:
     set_data_root(data_root)
     ensure_paths()
     return get_storage_settings()
+
+
+@router.put("/settings/assisted-annotation")
+def update_assisted_annotation_settings(payload: AssistedAnnotationSettingsUpdate) -> dict:
+    with connect() as conn:
+        return save_assisted_annotation_settings(conn, payload.model_dump())
 
 
 @router.get("/summary")

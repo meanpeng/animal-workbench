@@ -6,6 +6,7 @@
 **/target/
 **/*.log
 **/*.egg-info/
+dataset_imports/
 .claude/settings.local.json
 *.db
 *.db-shm

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import ensure_paths
 from .db import connect, init_db
 from .routers.annotations import router as annotations_router
+from .routers.assisted_annotation import router as assisted_annotation_router
 from .routers.classes import router as classes_router
 from .routers.core import router as core_router
 from .routers.dataset_jobs import router as dataset_jobs_router
@@ -15,6 +16,7 @@ from .routers.datasets import router as datasets_router
 from .routers.media import router as media_router
 from .routers.models import router as models_router
 from .routers.training import router as training_router
+from .services.assisted_annotation import runtime as assisted_annotation_runtime
 
 
 @asynccontextmanager
@@ -23,6 +25,7 @@ async def lifespan(_: FastAPI):
     init_db()
     _cleanup_stale_jobs()
     yield
+    assisted_annotation_runtime.stop()
 
 
 def _cleanup_stale_jobs() -> None:
@@ -94,6 +97,7 @@ app.include_router(dataset_jobs_router)
 app.include_router(media_router)
 app.include_router(datasets_router)
 app.include_router(annotations_router)
+app.include_router(assisted_annotation_router)
 app.include_router(training_router)
 app.include_router(models_router)
 

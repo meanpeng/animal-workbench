@@ -99,6 +99,7 @@ class AnnotationUpdate(AnnotationBoxBase):
 
 class AnnotationBulkUpsert(AnnotationBoxBase):
     id: int | None = None
+    class_name: str | None = Field(default=None, max_length=120)
 
 
 class AnnotationBulkSave(BaseModel):
@@ -139,3 +140,21 @@ class AnnotationImportRequest(BaseModel):
 
 class StorageSettingsUpdate(BaseModel):
     data_root: str = Field(min_length=1, max_length=500)
+
+
+class AssistedAnnotationSettingsUpdate(BaseModel):
+    enabled: bool = False
+    model_path: str | None = Field(default=None, max_length=500)
+    confidence: float = Field(default=0.25, ge=0.01, le=0.99)
+    preload_radius: int = Field(default=3, ge=0, le=20)
+    image_size: int = Field(default=640, ge=128, le=2048)
+    device: str = Field(default="auto", max_length=40)
+
+
+class AssistedAnnotationStart(BaseModel):
+    dataset_id: int
+
+
+class AssistedAnnotationPredictRequest(BaseModel):
+    dataset_id: int
+    media_asset_ids: list[int] = Field(min_length=1, max_length=41)

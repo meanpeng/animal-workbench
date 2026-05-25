@@ -30,7 +30,7 @@ export function mapAnnotationBox(item: {
 }
 
 export function annotationPayload(box: AnnotationBox) {
-  return {
+  const payload = {
     class_id: box.class_id,
     x: box.x,
     y: box.y,
@@ -38,4 +38,7 @@ export function annotationPayload(box: AnnotationBox) {
     height: box.height,
     review_status: box.review_status,
   };
+  return box.class_id <= 0 && box.predicted_class_name
+    ? { ...payload, class_name: box.predicted_class_name }
+    : payload;
 }

@@ -120,6 +120,45 @@ def test_annotation_update_and_delete(tmp_path, monkeypatch):
         assert listing.json()["annotations"] == []
 
 
+def test_summary_counts_only_existing_dataset_media(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANIMAL_WORKBENCH_HOME", str(tmp_path / "app-home"))
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    image_path = source_dir / "camera one.jpg"
+    Image.new("RGB", (80, 60), color=(20, 80, 120)).save(image_path)
+
+    with TestClient(app) as client:
+        imported = client.post("/media/import", json={"paths": [str(image_path)], "batch_name": "stale batch"}).json()
+        media_id = imported["imported"][0]["id"]
+        empty_summary = client.get("/summary").json()
+        assert empty_summary["counts"]["media_assets"] == 0
+
+        dataset_id, class_id = _dataset_with_class(client, media_id)
+        client.post(
+            "/annotations",
+            json={
+                "dataset_id": dataset_id,
+                "media_asset_id": media_id,
+                "class_id": class_id,
+                "x": 0.1,
+                "y": 0.2,
+                "width": 0.3,
+                "height": 0.4,
+                "review_status": "confirmed",
+            },
+        )
+
+        populated_summary = client.get("/summary").json()
+        assert populated_summary["counts"]["media_assets"] == 1
+        assert populated_summary["counts"]["annotations"] == 1
+
+        deleted = client.delete(f"/datasets/{dataset_id}")
+        assert deleted.status_code == 200
+        deleted_summary = client.get("/summary").json()
+        assert deleted_summary["counts"]["media_assets"] == 0
+        assert deleted_summary["counts"]["annotations"] == 0
+
+
 def test_create_dataset_class_and_reject_duplicate(tmp_path, monkeypatch):
     monkeypatch.setenv("ANIMAL_WORKBENCH_HOME", str(tmp_path / "app-home"))
     with TestClient(app) as client:

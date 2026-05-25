@@ -363,6 +363,7 @@ def dataset_media(
     class_id: int | None = None,
     annotation_status: str | None = None,
     media_asset_id: int | None = None,
+    random_seed: int | None = None,
 ) -> dict:
     with connect() as conn:
         project_id = current_project_id(conn)
@@ -476,6 +477,10 @@ def dataset_media(
             [*params, project_id],
         ).fetchone()
         total = int(count_row["cnt"])
+        order_clause = "ORDER BY ma.id ASC"
+        if random_seed is not None and media_asset_id is None:
+            seed = abs(int(random_seed)) % 2147483647
+            order_clause = f"ORDER BY ((ma.id * 1103515245 + {seed}) % 2147483647) ASC, ma.id ASC"
 
         # Fetch the current page.
         rows = rows_to_dicts(
@@ -488,7 +493,7 @@ def dataset_media(
                 FROM dataset_assets da
                 JOIN media_assets ma ON ma.id = da.media_asset_id
                 WHERE {where_clause} AND ma.project_id = ?
-                ORDER BY ma.id ASC
+                {order_clause}
                 LIMIT ? OFFSET ?
                 """,
                 [*params, project_id, limit, offset],

@@ -98,6 +98,10 @@ def test_folder_import_job_reports_progress_and_imports_annotations(tmp_path, mo
         media = client.get("/media").json()
         annotations = client.get(f"/media/{media[0]['id']}/annotations").json()
         assert len(annotations["annotations"]) == 1
+        batches = client.get("/annotation-batches").json()
+        assert batches[0]["completed_items"] == 1
+        assert batches[0]["total_items"] == 1
+        assert batches[0]["status"] == "completed"
 
         shutil.rmtree(source)
         content = client.get(f"/media/{media[0]['id']}/content")

@@ -22,6 +22,8 @@ type UseAnnotationSaveArgs = {
   setSaveStatus: React.Dispatch<React.SetStateAction<SaveStatus>>;
   setSaveModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setMessage: React.Dispatch<React.SetStateAction<string>>;
+  setDatasetMedia: React.Dispatch<React.SetStateAction<DatasetDetail["media"]>>;
+  onSaved?: () => void | Promise<void>;
 };
 
 export function useAnnotationSave({
@@ -39,7 +41,18 @@ export function useAnnotationSave({
   setSaveStatus,
   setSaveModalOpen,
   setMessage,
+  setDatasetMedia,
+  onSaved,
 }: UseAnnotationSaveArgs) {
+  const applySavedMediaCounts = (countsByMediaId: Map<number, number>) => {
+    setDatasetMedia((current) =>
+      current.map((item) => {
+        const count = countsByMediaId.get(item.id);
+        return count === undefined ? item : { ...item, annotation_count: count, annotation_status: "annotated" as const };
+      }),
+    );
+  };
+
   const doSaveCurrent = async (): Promise<boolean> => {
     if (!selected || !selectedDatasetId) return false;
     const unsaved = boxes.filter((box) => !box.id);
@@ -49,6 +62,7 @@ export function useAnnotationSave({
       draftsRef.current.delete(selected.id);
       setDraftMediaIds(new Set(draftsRef.current.keys()));
       await api.markMediaAnnotated(selectedDatasetId, selected.id);
+      applySavedMediaCounts(new Map([[selected.id, boxes.length]]));
       setMessage("\u6807\u6ce8\u5df2\u4fdd\u5b58\u3002");
       return true;
     }
@@ -73,6 +87,8 @@ export function useAnnotationSave({
       setDraftMediaIds(new Set(draftsRef.current.keys()));
       setSaveStatus("saved");
       setMessage("\u6807\u6ce8\u5df2\u4fdd\u5b58\u3002");
+      applySavedMediaCounts(new Map([[selected.id, result.annotations.length]]));
+      await onSaved?.();
       setTimeout(() => setSaveStatus("idle"), 2000);
       return true;
     } catch (error) {
@@ -86,6 +102,7 @@ export function useAnnotationSave({
     if (!selectedDatasetId) return false;
     setSaveStatus("saving");
     let totalSaved = 0;
+    const savedCounts = new Map<number, number>();
     try {
       if (selected) {
         const unsaved = boxes.filter((box) => !box.id);
@@ -105,8 +122,10 @@ export function useAnnotationSave({
           setHistory([]);
           setFuture([]);
           totalSaved += currentChanges;
+          savedCounts.set(selected.id, result.annotations.length);
         } else {
           await api.markMediaAnnotated(selectedDatasetId, selected.id);
+          savedCounts.set(selected.id, boxes.length);
         }
       }
       for (const [mediaId, draft] of draftsRef.current) {
@@ -116,7 +135,7 @@ export function useAnnotationSave({
         const draftChanges = draftUnsaved.length + draftChanged.length + draft.deletedIds.length;
         if (draftChanges > 0) {
           setMessage(`\u6b63\u5728\u4fdd\u5b58\u56fe\u7247 #${mediaId} \u7684\u8349\u7a3f...`);
-          await api.bulkSaveAnnotations(mediaId, selectedDatasetId, {
+          const result = await api.bulkSaveAnnotations(mediaId, selectedDatasetId, {
             delete_ids: draft.deletedIds,
             upserts: [
               ...draftChanged.map((box) => ({ id: box.id!, ...annotationPayload(box) })),
@@ -124,8 +143,10 @@ export function useAnnotationSave({
             ],
           });
           totalSaved += draftChanges;
+          savedCounts.set(mediaId, result.annotations.length);
         } else {
           await api.markMediaAnnotated(selectedDatasetId, mediaId);
+          savedCounts.set(mediaId, draft.boxes.length);
         }
       }
       draftsRef.current.clear();
@@ -133,6 +154,8 @@ export function useAnnotationSave({
       localStorage.setItem(`annotate_pos_${selectedDatasetId}`, String(selected?.id));
       setSaveStatus("saved");
       setMessage(`\u5df2\u4fdd\u5b58\u5168\u90e8 ${totalSaved} \u4e2a\u6807\u6ce8\u6539\u52a8\u3002`);
+      applySavedMediaCounts(savedCounts);
+      await onSaved?.();
       setTimeout(() => setSaveStatus("idle"), 2000);
       return true;
     } catch (error) {

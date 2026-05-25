@@ -8,6 +8,9 @@ export type AnnotationBox = {
   height: number;
   review_status: "draft" | "confirmed" | "rejected";
   dirty?: boolean;
+  predicted_class_name?: string;
+  confidence?: number;
+  source?: "manual" | "assistant";
 };
 
 export type AnnotationSnapshot = {

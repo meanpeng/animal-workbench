@@ -77,8 +77,18 @@ export type StorageSettings = {
   log_dir: string;
 };
 
+export type AssistedAnnotationSettings = {
+  enabled: boolean;
+  model_path: string;
+  confidence: number;
+  preload_radius: number;
+  image_size: number;
+  device: string;
+};
+
 export type AnnotationPayload = {
   class_id: number;
+  class_name?: string;
   x: number;
   y: number;
   width: number;
@@ -242,4 +252,29 @@ export type Experiment = {
   val_metrics: string;
   artifact_refs: string;
   created_at: string;
+};
+
+export type AssistedAnnotationPrediction = {
+  class_id: number | null;
+  class_name: string;
+  confidence: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type AssistedAnnotationPredictResult = {
+  media_asset_id: number;
+  predictions: AssistedAnnotationPrediction[];
+  error?: string;
+};
+
+export type AssistedAnnotationRuntimeStatus = {
+  enabled?: boolean;
+  loaded: boolean;
+  model_path: string;
+  class_names?: Record<string, string>;
+  error: string | null;
+  settings?: AssistedAnnotationSettings;
 };

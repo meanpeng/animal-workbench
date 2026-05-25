@@ -177,6 +177,22 @@ def sync_annotation_dependents(conn, project_id: int, media_asset_id: int, datas
     if not batch_ids:
         return
 
+    refresh_annotation_batches(conn, project_id, batch_ids)
+
+
+def refresh_annotation_batches(conn, project_id: int, batch_ids: list[int] | None = None) -> None:
+    """Refresh derived batch item and batch progress from current annotations."""
+    if batch_ids is None:
+        batch_rows = conn.execute(
+            "SELECT id FROM annotation_batches WHERE project_id = ?",
+            (project_id,),
+        ).fetchall()
+        batch_ids = [int(row["id"]) for row in batch_rows]
+    else:
+        batch_ids = list(dict.fromkeys(batch_ids))
+    if not batch_ids:
+        return
+
     placeholders = ",".join("?" for _ in batch_ids)
     conn.execute(
         f"""
@@ -191,9 +207,9 @@ def sync_annotation_dependents(conn, project_id: int, media_asset_id: int, datas
             ELSE 'pending'
         END,
         updated_at = CURRENT_TIMESTAMP
-        WHERE media_asset_id = ? AND batch_id IN ({placeholders})
+        WHERE batch_id IN ({placeholders})
         """,
-        (project_id, media_asset_id, *batch_ids),
+        (project_id, *batch_ids),
     )
     for batch_id in batch_ids:
         counts = conn.execute(
