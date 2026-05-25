@@ -778,7 +778,8 @@ export function Annotate({
     if (totalChanges === 0) {
       draftsRef.current.delete(selected.id);
       setDraftMediaIds(new Set(draftsRef.current.keys()));
-      setMessage("\u6ca1\u6709\u6807\u6ce8\u6539\u52a8\u9700\u8981\u4fdd\u5b58\u3002");
+      await api.markMediaAnnotated(selectedDatasetId, selected.id);
+      setMessage("\u6807\u6ce8\u5df2\u4fdd\u5b58\u3002");
       return true;
     }
     setSaveStatus("saving");
@@ -834,6 +835,8 @@ export function Annotate({
           setHistory([]);
           setFuture([]);
           totalSaved += currentChanges;
+        } else {
+          await api.markMediaAnnotated(selectedDatasetId, selected.id);
         }
       }
       for (const [mediaId, draft] of draftsRef.current) {
@@ -851,6 +854,8 @@ export function Annotate({
             ],
           });
           totalSaved += draftChanges;
+        } else {
+          await api.markMediaAnnotated(selectedDatasetId, mediaId);
         }
       }
       draftsRef.current.clear();
@@ -949,7 +954,7 @@ export function Annotate({
                   title={item.original_name}
                 >
                   <span className="media-name">
-                    <span className={`status-dot ${draftMediaIds.has(item.id) ? "draft" : item.annotation_count > 0 ? "saved" : "empty"}`} />
+                    <span className={`status-dot ${draftMediaIds.has(item.id) ? "draft" : item.annotation_status === "annotated" || item.annotation_count > 0 ? "saved" : "empty"}`} />
                     <span className="media-id">{item.id}</span> {truncateName(item.original_name)}
                   </span>
                   <span className="media-meta">
@@ -1104,7 +1109,7 @@ export function Annotate({
         </div>
 
         {addClassOpen ? (
-          <div className="modal-overlay" onClick={() => setAddClassOpen(false)}>
+          <div className="modal-overlay">
             <div className="modal-dialog" onClick={(event) => event.stopPropagation()}>
               <h3>新增标注类别</h3>
               <input
@@ -1132,7 +1137,7 @@ export function Annotate({
         ) : null}
 
         {saveModalOpen ? (
-          <div className="modal-overlay" onClick={() => setSaveModalOpen(false)}>
+          <div className="modal-overlay">
             <div className="modal-dialog" onClick={(event) => event.stopPropagation()}>
               <h3>保存标注</h3>
               <p className="modal-desc">

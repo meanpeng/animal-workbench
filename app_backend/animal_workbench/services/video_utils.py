@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import tempfile
+import uuid
 from pathlib import Path
 
 import cv2
+
+from ..config import get_paths
 
 MAX_FRAMES = 60
 
@@ -47,7 +49,12 @@ def extract_video_frames(
         if interval_frames < 1:
             interval_frames = 1
 
-        out_dir = output_dir or Path(tempfile.mkdtemp(prefix="video_frames_"))
+        if output_dir is None:
+            frame_root = get_paths().runtime_dir / "frame_extracts"
+            frame_root.mkdir(parents=True, exist_ok=True)
+            out_dir = frame_root / f"video_frames_{uuid.uuid4().hex}"
+        else:
+            out_dir = output_dir
         out_dir.mkdir(parents=True, exist_ok=True)
 
         name = base_name or video_path.stem

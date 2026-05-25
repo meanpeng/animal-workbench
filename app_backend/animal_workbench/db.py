@@ -35,7 +35,9 @@ def init_db(db_path: Path | None = None) -> None:
         conn.executescript(schema_path.read_text(encoding="utf-8"))
         conn.execute("PRAGMA foreign_keys = ON")
         ensure_default_project(conn)
+        migrate_dataset_job_types(conn)
         migrate_default_class_colors(conn)
+        migrate_dataset_assets_annotation_status(conn)
     finally:
         conn.close()
 
@@ -80,5 +82,68 @@ def migrate_default_class_colors(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def migrate_dataset_job_types(conn: sqlite3.Connection) -> None:
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'dataset_jobs'").fetchone()
+    create_sql = str(row[0] if row else "")
+    if "fusion_build" in create_sql:
+        return
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("ALTER TABLE dataset_jobs RENAME TO dataset_jobs_old")
+        conn.execute(
+            """
+            CREATE TABLE dataset_jobs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              project_id INTEGER NOT NULL,
+              job_type TEXT NOT NULL CHECK(job_type IN ('public_download', 'public_import', 'folder_import', 'fusion_build')),
+              status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued', 'running', 'completed', 'failed')),
+              stage TEXT NOT NULL DEFAULT 'queued',
+              percent REAL NOT NULL DEFAULT 0,
+              current INTEGER NOT NULL DEFAULT 0,
+              total INTEGER NOT NULL DEFAULT 0,
+              message TEXT NOT NULL DEFAULT '',
+              log TEXT NOT NULL DEFAULT '[]',
+              error_message TEXT,
+              result_summary TEXT NOT NULL DEFAULT '{}',
+              params TEXT NOT NULL DEFAULT '{}',
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              started_at TEXT,
+              ended_at TEXT,
+              FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO dataset_jobs(
+              id, project_id, job_type, status, stage, percent, current, total,
+              message, log, error_message, result_summary, params,
+              created_at, updated_at, started_at, ended_at
+            )
+            SELECT
+              id, project_id, job_type, status, stage, percent, current, total,
+              message, log, error_message, result_summary, params,
+              created_at, updated_at, started_at, ended_at
+            FROM dataset_jobs_old
+            """
+        )
+        conn.execute("DROP TABLE dataset_jobs_old")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dataset_jobs_project ON dataset_jobs(project_id, created_at)")
+        conn.commit()
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 def rows_to_dicts(rows: Iterable[sqlite3.Row]) -> list[dict]:
     return [dict(row) for row in rows]
+
+
+def migrate_dataset_assets_annotation_status(conn: sqlite3.Connection) -> None:
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'dataset_assets'").fetchone()
+    create_sql = str(row[0] if row else "")
+    if "annotation_status" in create_sql:
+        return
+    conn.execute("ALTER TABLE dataset_assets ADD COLUMN annotation_status TEXT NOT NULL DEFAULT 'unannotated'")
+    conn.commit()

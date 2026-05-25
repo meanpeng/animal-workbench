@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import random
+import shutil
 import urllib.parse
 import urllib.request
 from collections import defaultdict
@@ -59,20 +61,23 @@ def import_public_dataset(
         raise FileNotFoundError(f"公开数据目录不存在: {root}")
 
     reporter.update(stage="scanning", percent=5, message=f"正在检查 {spec.name} 数据目录")
-    if any((root / name).exists() for name in ("dataset.yaml", "data.yaml", "images")):
-        return import_dataset_folder(conn, project_id, str(root), name=spec.name, dataset_kind="auto", dataset_type="public", reporter=reporter)
+    if any((root / name).exists() for name in ("dataset.yaml", "data.yaml")):
+        return import_dataset_folder(conn, project_id, str(root), name=spec.name, dataset_kind="auto", dataset_type="public", reporter=reporter, skip_copy=True)
+    if spec.key not in {"swg", "wcs"} and (root / "images").exists():
+        return import_dataset_folder(conn, project_id, str(root), name=spec.name, dataset_kind="auto", dataset_type="public", reporter=reporter, skip_copy=True)
 
+    effective_sample_limit = sample_limit if sample_limit is not None else (spec.default_sample_limit if source_path is None else None)
     materialized = public_dataset_dir(spec.key) / "materialized_yolo"
     if spec.key == "lote":
-        materialize_lote(root, materialized, sample_limit, reporter)
+        materialize_lote(root, materialized, effective_sample_limit, reporter)
     elif spec.key == "ena24":
-        materialize_ena24(root, materialized, sample_limit, reporter)
+        materialize_ena24(root, materialized, effective_sample_limit, reporter)
     elif spec.key in {"swg", "wcs"}:
-        materialize_lila(root, materialized, sample_limit or spec.default_sample_limit, reporter)
+        materialize_lila(root, materialized, effective_sample_limit, reporter)
     else:
         raise ValueError(f"未知公开数据集: {spec.key}")
 
-    return import_dataset_folder(conn, project_id, str(materialized), name=spec.name, dataset_kind="labeled", dataset_type="public", reporter=reporter)
+    return import_dataset_folder(conn, project_id, str(materialized), name=spec.name, dataset_kind="labeled", dataset_type="public", reporter=reporter, skip_copy=True)
 
 
 def materialize_lote(root: Path, output: Path, limit: int | None, reporter: JobReporter) -> None:
@@ -210,13 +215,21 @@ def materialize_lila(root: Path, output: Path, limit: int | None, reporter: JobR
             anns_by_image[str(ann["image_id"])].append(ann)
     images = [image for image in data.get("images", []) if str(image["id"]) in anns_by_image]
     random.Random(42).shuffle(images)
+    local_image_index = {
+        path.name: path
+        for path in root.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+    }
+    if local_image_index:
+        local_images = [image for image in images if any(name in local_image_index for name in lila_image_candidate_names(image))]
+        if local_images:
+            images = local_images
     if limit is not None:
         images = images[:limit]
 
     # Phase 1: Download or locate images in parallel.
     def _fetch_image(image: dict) -> tuple[dict, Path | None]:
-        file_name = str(image.get("file_name") or f"{image['id']}.jpg")
-        return image, find_or_download_lila_image(root, image_base, file_name)
+        return image, find_or_download_lila_image(root, image_base, image, local_image_index)
 
     fetched: list[tuple[dict, Path | None]] = []
     total = len(images)
@@ -232,15 +245,14 @@ def materialize_lila(root: Path, output: Path, limit: int | None, reporter: JobR
             if done % 25 == 0 or done == total:
                 reporter.update(stage="parsing", percent=10, current=done, total=total, message=f"已下载/查找 {done}/{total} 张公开图片")
 
-    # Phase 2: Generate label text.
-    write_tasks: list[tuple[Path, bytes, Path, str]] = []
+    # Phase 2: Generate image links and label text.
+    write_tasks: list[tuple[Path, Path, Path, str]] = []
     for image, raw_image in fetched:
         if raw_image is None:
             continue
         split = choose_split(random)
         target_image = output / "images" / split / raw_image.name
         target_label = output / "labels" / split / f"{raw_image.stem}.txt"
-        image_bytes = raw_image.read_bytes()
         width = int(image.get("width") or Image.open(raw_image).width)
         height = int(image.get("height") or Image.open(raw_image).height)
         lines = []
@@ -251,14 +263,13 @@ def materialize_lila(root: Path, output: Path, limit: int | None, reporter: JobR
             box = coco_bbox_to_yolo(ann["bbox"], width, height)
             if box:
                 lines.append(f"{class_to_id[category_name]} {box[0]:.6f} {box[1]:.6f} {box[2]:.6f} {box[3]:.6f}")
-        write_tasks.append((target_image, image_bytes, target_label, "\n".join(lines)))
+        write_tasks.append((raw_image, target_image, target_label, "\n".join(lines)))
 
     # Phase 3: Write files in parallel.
-    def _write_task(task: tuple[Path, bytes, Path, str]) -> None:
-        target_image, image_bytes, target_label, label_text = task
-        target_image.parent.mkdir(parents=True, exist_ok=True)
+    def _write_task(task: tuple[Path, Path, Path, str]) -> None:
+        source_image, target_image, target_label, label_text = task
+        link_or_copy(source_image, target_image)
         target_label.parent.mkdir(parents=True, exist_ok=True)
-        target_image.write_bytes(image_bytes)
         target_label.write_text(label_text, encoding="utf-8")
 
     if write_tasks:
@@ -269,14 +280,31 @@ def materialize_lila(root: Path, output: Path, limit: int | None, reporter: JobR
     write_dataset_yaml(output, class_names or ["animal"])
 
 
-def find_or_download_lila_image(root: Path, image_base: str, file_name: str) -> Path | None:
-    name = Path(file_name).name
-    existing = next(root.rglob(name), None)
-    if existing:
-        return existing
+def lila_image_candidate_names(image: dict) -> list[str]:
+    file_name = str(image.get("file_name") or "")
+    return list(dict.fromkeys(item for item in [
+        Path(file_name).name if file_name else "",
+        f"{image.get('id')}.jpg" if image.get("id") else "",
+        str(image.get("wcs_id") or ""),
+    ] if item))
+
+
+def find_or_download_lila_image(root: Path, image_base: str, image: dict, local_image_index: dict[str, Path] | None = None) -> Path | None:
+    file_name = str(image.get("file_name") or "")
+    for name in lila_image_candidate_names(image):
+        existing = (local_image_index or {}).get(name)
+        if existing:
+            return existing
+        if local_image_index is None:
+            existing = next(root.rglob(name), None)
+            if existing:
+                return existing
     if not image_base:
         return None
-    target = root / "images" / name
+    if not file_name:
+        return None
+    target_name = Path(file_name).name if file_name else f"{image['id']}.jpg"
+    target = root / "images" / target_name
     target.parent.mkdir(parents=True, exist_ok=True)
     url = image_base + urllib.parse.quote(file_name.replace("\\", "/"), safe="/")
     try:
@@ -297,6 +325,23 @@ def reset_yolo(output: Path) -> None:
     for split in ("train", "val", "test"):
         (output / "images" / split).mkdir(parents=True, exist_ok=True)
         (output / "labels" / split).mkdir(parents=True, exist_ok=True)
+
+
+def link_or_copy(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+    try:
+        os.link(source, target)
+        return
+    except OSError:
+        pass
+    try:
+        target.symlink_to(source)
+        return
+    except OSError:
+        pass
+    shutil.copy2(source, target)
 
 
 def write_dataset_yaml(output: Path, names: list[str]) -> None:

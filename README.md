@@ -12,14 +12,23 @@ workbench_app/
   desktop/       Tauri v2 + React/TypeScript desktop shell
 ```
 
-The application stores runtime state in:
+The application stores SQLite state and small logs in:
 
 ```text
 %APPDATA%\AnimalDetectionWorkbench\
 ```
 
+Large dataset files, public dataset materializations, training exports, and
+video frame extraction output are stored separately. On Windows the default
+large-file location prefers the first available non-system drive, for example:
+
+```text
+D:\AnimalDetectionWorkbenchData\
+```
+
 Set `ANIMAL_WORKBENCH_HOME` while developing or testing to point the app at a
-temporary workspace.
+temporary workspace. Set `ANIMAL_WORKBENCH_DATA_DIR` or use the desktop storage
+settings dialog to choose a different large-file directory.
 
 ## First Development Milestone
 

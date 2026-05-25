@@ -31,11 +31,8 @@ export function DatasetsPanel({
     [datasetJobs],
   );
 
-  // Modal state for auto-create dialog
-  const [modalOpen, setModalOpen] = useState(false);
-  const [modalTitle, setModalTitle] = useState("");
-  const [modalDefaultName, setModalDefaultName] = useState("");
-  const [modalOnConfirm, setModalOnConfirm] = useState<{(name: string): Promise<void>}>(async () => {});
+  const [fusionModalOpen, setFusionModalOpen] = useState(false);
+  const [fusionDefaultName, setFusionDefaultName] = useState("");
 
   // ImportDataModal state
   const [importModalOpen, setImportModalOpen] = useState(false);
@@ -259,7 +256,7 @@ export function DatasetsPanel({
       }
       const job = await api.importPublicDataset(item.key, {
         source_path: selected[0],
-        sample_limit: sampleLimitByKey[item.key] || item.default_sample_limit || undefined,
+        sample_limit: sampleLimitByKey[item.key] || undefined,
       });
       setActiveJobId(job.id);
       setDatasetJobs((current) => [job, ...current.filter((entry) => entry.id !== job.id)].slice(0, 20));
@@ -278,16 +275,24 @@ export function DatasetsPanel({
   };
 
   const handleBuildDataset = async (name: string) => {
-    if (selectedDatasetIds.length === 0 || !name.trim()) return;
+    if (selectedDatasetIds.length === 0) {
+      setMessage("请先选择要融合的数据集");
+      return;
+    }
+    if (!name.trim()) {
+      setMessage("请输入融合数据集名称");
+      return;
+    }
     setBusy(true);
-    setMessage("正在从已有数据集构建...");
+    setMessage("正在创建融合数据集任务...");
     try {
-      const dataset = await api.createFusionDataset({
+      const job = await api.createFusionDatasetJob({
         name: name.trim(),
         source_dataset_ids: selectedDatasetIds,
       });
-      await onRefresh();
-      setMessage(`数据集「${dataset.name}」已构建`);
+      setActiveJobId(job.id);
+      setDatasetJobs((current) => [job, ...current.filter((entry) => entry.id !== job.id)].slice(0, 20));
+      setMessage("融合数据集构建任务已启动");
       setSelectedDatasetIds([]);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "构建数据集失败");
@@ -332,8 +337,7 @@ export function DatasetsPanel({
             const defaultLimit = item.default_sample_limit ?? 0;
             const itemJobActive = Boolean(job && (job.status === "queued" || job.status === "running"));
             const hasImportedDataset = datasets.some((ds) => ds.dataset_type === "public" && ds.name.includes(item.name));
-            const completedImportJob = job?.job_type === "public_import" && job.status === "completed";
-            const isLoaded = hasImportedDataset || completedImportJob;
+            const isLoaded = hasImportedDataset;
             return (
               <article className="dataset-card" key={item.key}>
                 <div>
@@ -355,7 +359,7 @@ export function DatasetsPanel({
                 ) : null}
                 {isLoaded ? (
                   <div className="job-progress">
-                    <span className="job-done-badge">✅ 已完成</span>
+                    <span className="public-loaded-badge">已完成</span>
                   </div>
                 ) : (
                   <>
@@ -416,7 +420,9 @@ export function DatasetsPanel({
                       <span>{stageName(job.stage)} {Math.round(job.percent)}%</span>
                     </>
                   ) : (
-                    <span className="job-status-badge">{job.status === "completed" ? "✅ 完成" : job.status === "failed" ? "❌ 失败" : job.status}</span>
+                    <span className="job-status-badge" data-status={job.status}>
+                      {job.status === "completed" ? "完成" : job.status === "failed" ? "失败" : job.status}
+                    </span>
                   )}
                 </div>
                 <span className="job-row-time">{formatBeijingTime(job.created_at)}</span>
@@ -432,12 +438,8 @@ export function DatasetsPanel({
           <h2>数据集</h2>
           <button
             onClick={() => {
-              setModalTitle("请输入新数据集名称");
-              setModalDefaultName("");
-              setModalOnConfirm(() => async (name: string) => {
-                await handleBuildDataset(name);
-              });
-              setModalOpen(true);
+              setFusionDefaultName(defaultFusionDatasetName());
+              setFusionModalOpen(true);
             }}
             disabled={selectedDatasetIds.length === 0 || busy}
             title="从已选数据集构建新数据集"
@@ -482,19 +484,28 @@ export function DatasetsPanel({
         onCancel={() => setImportModalOpen(false)}
       />
 
-      {/* Modal for auto-create naming (kept for backward compat) */}
       <Modal
-        title={modalTitle}
-        defaultValue={modalDefaultName}
-        open={modalOpen}
+        title="请输入新数据集名称"
+        defaultValue={fusionDefaultName}
+        open={fusionModalOpen}
         onConfirm={async (name) => {
-          setModalOpen(false);
-          await modalOnConfirm(name);
+          setFusionModalOpen(false);
+          await handleBuildDataset(name);
         }}
-        onCancel={() => setModalOpen(false)}
+        onCancel={() => setFusionModalOpen(false)}
       />
     </section>
   );
+}
+
+function defaultFusionDatasetName() {
+  return `融合数据集 - ${new Date().toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
 }
 
 
@@ -579,7 +590,7 @@ function ImportDataModal({
   const hasSelection = selectedFiles.length > 0 || selectedFolder !== "";
 
   return (
-    <div className="modal-overlay" onClick={onCancel}>
+    <div className="modal-overlay">
       <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
         <h3>导入新数据</h3>
 
@@ -713,18 +724,22 @@ function Modal({
   title: string;
   defaultValue: string;
   open: boolean;
-  onConfirm: (value: string) => void;
+  onConfirm: (value: string) => void | Promise<void>;
   onCancel: () => void;
 }) {
   const [value, setValue] = useState(defaultValue);
+  const [submitting, setSubmitting] = useState(false);
   useEffect(() => {
-    if (open) setValue(defaultValue);
+    if (open) {
+      setValue(defaultValue);
+      setSubmitting(false);
+    }
   }, [open, defaultValue]);
 
   if (!open) return null;
 
   return (
-    <div className="modal-overlay" onClick={onCancel}>
+    <div className="modal-overlay">
       <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
         <h3>{title}</h3>
         <input
@@ -734,9 +749,20 @@ function Modal({
           autoFocus
         />
         <div className="modal-actions">
-          <button onClick={onCancel}>取消</button>
-          <button className="primary" onClick={() => onConfirm(value.trim() || defaultValue)}>
-            确定
+          <button onClick={onCancel} disabled={submitting}>取消</button>
+          <button
+            className="primary"
+            disabled={submitting}
+            onClick={async () => {
+              setSubmitting(true);
+              try {
+                await onConfirm(value.trim() || defaultValue);
+              } finally {
+                setSubmitting(false);
+              }
+            }}
+          >
+            {submitting ? "处理中..." : "确定"}
           </button>
         </div>
       </div>
@@ -990,7 +1016,7 @@ function DatasetDetailView({
       {loadingMore ? <p className="empty-line">加载更多...</p> : null}
 
       {confirmDelete ? (
-        <div className="modal-overlay" onClick={() => setConfirmDelete(false)}>
+        <div className="modal-overlay">
           <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
             <h3>确认删除</h3>
             <p style={{ color: "#64748b", margin: "0 0 16px", lineHeight: 1.6 }}>
@@ -1008,7 +1034,7 @@ function DatasetDetailView({
       ) : null}
 
       {addClassOpen ? (
-        <div className="modal-overlay" onClick={() => setAddClassOpen(false)}>
+        <div className="modal-overlay">
           <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
             <h3>新增标注类别</h3>
             <input
@@ -1055,6 +1081,7 @@ function stageName(stage: string) {
       parsing: "解析",
       importing_media: "导入素材",
       saving_annotations: "写入标注",
+      building: "构建",
       finalizing: "收尾",
       completed: "完成",
       failed: "失败",
@@ -1067,6 +1094,7 @@ function jobTypeName(type: DatasetJob["job_type"]) {
     public_download: "公开数据下载",
     public_import: "公开数据加载",
     folder_import: "文件夹导入",
+    fusion_build: "融合数据集构建",
   }[type];
 }
 

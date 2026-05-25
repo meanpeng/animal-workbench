@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { LucideIcon } from "lucide-react";
 import {
   ChartSpline,
   CirclePlay,
   Database,
+  FolderOpen,
   LayoutDashboard,
   Play,
   RefreshCw,
+  Save,
   ScanSearch,
   Settings2,
   SquarePen,
+  X,
 } from "lucide-react";
 import { api } from "./api";
 import { DataTable } from "./components/DataTable";
@@ -19,6 +23,7 @@ import type {
   Dataset,
   Experiment,
   ModelItem,
+  StorageSettings,
   Summary,
   TrainingJob,
 } from "./types";
@@ -46,6 +51,7 @@ function App() {
   const [models, setModels] = useState<ModelItem[]>([]);
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [status, setStatus] = useState("正在连接工作区");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const annotateTargetRef = useRef<{datasetId: number; mediaId: number} | null>(null);
 
   const refreshCore = async () => {
@@ -151,7 +157,7 @@ function App() {
             <h1>{viewTitle(view)}</h1>
           </div>
           <div className="topbar-actions">
-            <button className="icon-button" title="工作区设置">
+            <button className="icon-button" title="存储设置" onClick={() => setSettingsOpen(true)}>
               <Settings2 size={18} />
             </button>
           </div>
@@ -162,7 +168,88 @@ function App() {
         {view === "annotate" && <Annotate datasets={datasets} initialDatasetId={annotateTargetRef.current?.datasetId ?? null} initialMediaId={annotateTargetRef.current?.mediaId ?? null} onTargetConsumed={() => { annotateTargetRef.current = null; }} />}
         {view === "training" && <TrainingPanel datasets={datasets} jobs={jobs} models={models} onRefresh={refresh} />}
         {view === "results" && <Results models={models} experiments={experiments} />}
+        {settingsOpen ? <StorageSettingsModal onClose={() => setSettingsOpen(false)} onSaved={refresh} /> : null}
       </main>
+    </div>
+  );
+}
+
+function StorageSettingsModal({
+  onClose,
+  onSaved,
+}: {
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [settings, setSettings] = useState<StorageSettings | null>(null);
+  const [dataRoot, setDataRoot] = useState("");
+  const [message, setMessage] = useState("公开数据集、训练导出和视频抽帧都会存到这里。");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.storageSettings()
+      .then((next) => {
+        setSettings(next);
+        setDataRoot(next.data_root);
+      })
+      .catch((error) => setMessage(error instanceof Error ? error.message : "读取设置失败"));
+  }, []);
+
+  const pickFolder = async () => {
+    const selected = await invoke<string[]>("pick_media_folder");
+    if (selected[0]) setDataRoot(selected[0]);
+  };
+
+  const save = async () => {
+    if (!dataRoot.trim()) return;
+    setBusy(true);
+    try {
+      const next = await api.updateStorageSettings({ data_root: dataRoot.trim() });
+      setSettings(next);
+      setDataRoot(next.data_root);
+      setMessage("已保存。之后的新公开数据集、训练导出和抽帧会写入新目录；已有文件不会自动搬迁。");
+      await onSaved();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "保存失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay">
+      <div className="modal-dialog storage-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-title-row">
+          <h3>存储设置</h3>
+          <button className="icon-button-sm" onClick={onClose} title="关闭">
+            <X size={16} />
+          </button>
+        </div>
+        <label className="storage-field">
+          <span>数据集大文件目录</span>
+          <div className="path-input-row">
+            <input value={dataRoot} onChange={(event) => setDataRoot(event.target.value)} placeholder="选择 C 盘以外的目录" />
+            <button onClick={() => void pickFolder()} disabled={busy} title="选择文件夹">
+              <FolderOpen size={16} />
+            </button>
+          </div>
+        </label>
+        {settings ? (
+          <div className="storage-paths">
+            <span>数据库：{settings.db_path}</span>
+            <span>公开数据：{settings.public_data_dir}</span>
+            <span>训练缓存：{settings.runtime_dir}</span>
+          </div>
+        ) : null}
+        <p className="helper-text">{message}</p>
+        <div className="modal-actions">
+          <button onClick={onClose}>取消</button>
+          <button className="primary" onClick={() => void save()} disabled={busy || !dataRoot.trim()}>
+            <Save size={16} />
+            <span>{busy ? "保存中..." : "保存"}</span>
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

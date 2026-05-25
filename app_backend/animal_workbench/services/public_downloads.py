@@ -55,6 +55,7 @@ def download_ena24(spec: PublicDatasetSpec, root: Path, force: bool, reporter: J
         repo_id=spec.urls["huggingface_repo"],
         repo_type="dataset",
         local_dir=root,
+        cache_dir=root / ".huggingface_cache",
         allow_patterns=["*.parquet", "README*", "*.json", "*.yaml", "*.yml", "*.txt"],
     )
     reporter.update(stage="downloading", percent=100, message="ENA24 下载完成")

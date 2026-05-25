@@ -81,6 +81,7 @@ def _register_image_asset(
     camera_site: str | None = None,
     source_kind: str = "imported",
     paths: AppPaths | None = None,
+    skip_copy: bool = True,
 ) -> dict[str, Any] | None:
     """Register a single image file as a media_asset. Returns the row or None on failure."""
     paths = paths or get_paths()
@@ -94,13 +95,16 @@ def _register_image_asset(
         return dict(existing)
 
     width, height = image_dimensions(source_path)
-    storage_dir = paths.media_dir / checksum[:2] / checksum[2:4]
-    storage_dir.mkdir(parents=True, exist_ok=True)
-    internal_path = storage_dir / f"{uuid.uuid4().hex}{source_path.suffix.lower()}"
-    try:
-        shutil.copy2(source_path, internal_path)
-    except OSError:
-        return None
+    if skip_copy:
+        internal_path = str(source_path.resolve())
+    else:
+        storage_dir = paths.media_dir / checksum[:2] / checksum[2:4]
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        internal_path = str((storage_dir / f"{uuid.uuid4().hex}{source_path.suffix.lower()}").resolve())
+        try:
+            shutil.copy2(source_path, internal_path)
+        except OSError:
+            return None
 
     cursor = conn.execute(
         """
@@ -129,6 +133,8 @@ def _batch_import_media_assets(
     project_id: int,
     items: list[tuple[Path, str, str | None]],
     paths: AppPaths,
+    *,
+    skip_copy: bool = True,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Hash and copy files in parallel, then write database rows sequentially."""
     if not items:
@@ -172,17 +178,20 @@ def _batch_import_media_assets(
         else:
             to_prepare.append((path, kind, orig_name, checksum))
 
-    # Phase 3: Copy files and read dimensions in parallel.
+    # Phase 3: Copy (or reference) files and read dimensions in parallel.
     def _prepare(item: tuple[Path, str, str | None, str]) -> tuple[Path, str, str | None, str, str, int | None, int | None, str] | None:
         path, kind, orig_name, checksum = item
         try:
             suffix = path.suffix.lower()
             width, height = image_dimensions(path)
-            storage_dir = paths.media_dir / checksum[:2] / checksum[2:4]
-            storage_dir.mkdir(parents=True, exist_ok=True)
-            internal_path = storage_dir / f"{uuid.uuid4().hex}{suffix}"
-            shutil.copy2(path, internal_path)
-            return path, kind, orig_name, checksum, suffix, width, height, str(internal_path)
+            if skip_copy:
+                internal_path = str(path.resolve())
+            else:
+                storage_dir = paths.media_dir / checksum[:2] / checksum[2:4]
+                storage_dir.mkdir(parents=True, exist_ok=True)
+                internal_path = str((storage_dir / f"{uuid.uuid4().hex}{suffix}").resolve())
+                shutil.copy2(path, internal_path)
+            return path, kind, orig_name, checksum, suffix, width, height, internal_path
         except Exception:
             return None
 
@@ -223,6 +232,7 @@ def import_media(
     paths: AppPaths | None = None,
     *,
     extract_frames: bool = False,
+    skip_copy: bool = True,
 ) -> dict[str, Any]:
     paths = paths or get_paths()
     skipped: list[str] = []
@@ -260,7 +270,7 @@ def import_media(
     for path in frame_paths:
         items.append((path, "frame", path.name))
 
-    imported, batch_skipped = _batch_import_media_assets(conn, project_id, items, paths)
+    imported, batch_skipped = _batch_import_media_assets(conn, project_id, items, paths, skip_copy=skip_copy)
     skipped.extend(batch_skipped)
 
     batch = create_annotation_batch_for_assets(conn, project_id, batch_name, imported)

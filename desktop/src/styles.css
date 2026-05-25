@@ -58,7 +58,7 @@ input {
   border-radius: 7px;
   background: #ffffff;
   color: #172033;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s;
 }
 input:hover {
   border-color: #7c9ab8;
@@ -66,7 +66,7 @@ input:hover {
 input:focus {
   outline: none;
   border-color: #0f766e;
-  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.15);
+  border-width: 2px;
 }
 
 /* Custom select ---------------------------------------------------------- */
@@ -88,7 +88,7 @@ input:focus {
   align-items: center;
   justify-content: space-between;
   cursor: pointer;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s;
 }
 .select-trigger:hover {
   border-color: #7c9ab8;
@@ -98,7 +98,7 @@ input:focus {
 .select-trigger.open {
   outline: none;
   border-color: #0f766e;
-  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.15);
+  border-width: 2px;
 }
 .select-trigger:disabled {
   opacity: 0.55;
@@ -830,11 +830,10 @@ label span {
 .job-done-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
   padding: 4px 12px;
   border-radius: 6px;
-  background: #ecfdf5;
-  color: #065f46;
+  background: #16a34a;
+  color: #fff;
   font-size: 13px;
   font-weight: 500;
 }
@@ -847,7 +846,14 @@ label span {
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
+  color: #fff;
 }
+.job-status-badge[data-status="queued"]  { background: #8b95a5; }
+.job-status-badge[data-status="exported"] { background: #6c7a8d; }
+.job-status-badge[data-status="running"]  { background: #2563eb; }
+.job-status-badge[data-status="completed"] { background: #16a34a; }
+.job-status-badge[data-status="failed"]   { background: #dc2626; }
+.job-status-badge[data-status="cancelled"] { background: #ea580c; }
 
 
 /* ── Modal ─────────────────────────────────────────── */
@@ -872,6 +878,16 @@ label span {
   margin: 0 0 16px;
   font-size: 16px;
 }
+.modal-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.modal-title-row h3 {
+  margin: 0;
+}
 .modal-dialog input {
   width: 100%;
   padding: 10px 12px;
@@ -889,6 +905,41 @@ label span {
   background: #0f766e;
   color: #fff;
   border-color: #0f766e;
+}
+.storage-modal {
+  width: min(680px, 92vw);
+}
+.storage-field {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+  color: #334155;
+}
+.path-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 8px;
+}
+.path-input-row button,
+.modal-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.storage-paths {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+}
+.storage-paths span {
+  overflow-wrap: anywhere;
 }
 
 /* DatasetSelectModal */
@@ -1575,7 +1626,7 @@ input:focus,
 .select-trigger:focus,
 .select-trigger.open {
   border-color: var(--app-accent-border);
-  box-shadow: 0 0 0 3px var(--app-accent-soft);
+  border-width: 2px;
 }
 
 progress {
@@ -1883,7 +1934,7 @@ label span,
 }
 
 .task-badge,
-.job-status-badge,
+.job-status-badge:not([data-status]),
 .job-done-badge {
   border: 1px solid var(--app-border);
   border-radius: 999px;
@@ -1893,8 +1944,8 @@ label span,
 
 .job-done-badge {
   border-color: rgba(57, 217, 138, 0.36);
-  color: var(--app-success);
-  background: rgba(57, 217, 138, 0.11);
+  color: #fff;
+  background: #16a34a;
 }
 
 .job-message.error,
@@ -2083,6 +2134,20 @@ label span,
   box-shadow: var(--app-shadow);
 }
 
+.storage-field {
+  color: var(--app-text-soft);
+}
+
+.storage-paths {
+  border-color: var(--app-border);
+  color: var(--app-text-muted);
+  background: #1a1a1b;
+}
+
+.storage-paths span {
+  color: var(--app-text-muted);
+}
+
 .radio-row,
 .checkbox-row,
 .import-path-header,
@@ -2265,7 +2330,7 @@ input:focus,
 .select-trigger:focus,
 .select-trigger.open {
   border-color: var(--app-accent-border);
-  box-shadow: var(--app-focus);
+  border-width: 2px;
 }
 
 .metric,
@@ -2386,7 +2451,7 @@ progress::-webkit-progress-value {
 }
 
 .task-badge,
-.job-status-badge,
+.job-status-badge:not([data-status]),
 .job-done-badge,
 .class-badge,
 .class-chip,
@@ -2396,8 +2461,8 @@ progress::-webkit-progress-value {
 }
 
 .job-done-badge {
-  color: #80d9a8;
-  background: rgba(54, 180, 108, 0.12);
+  color: #fff;
+  background: #16a34a;
   border-color: rgba(54, 180, 108, 0.34);
 }
 
@@ -2780,15 +2845,24 @@ input[type="checkbox"]:focus-visible {
 /* Training workbench ----------------------------------------------------- */
 .training-workspace {
   display: grid;
-  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
-  gap: 14px;
+  grid-template-columns: minmax(340px, 400px) minmax(0, 1fr);
+  gap: 16px;
   align-items: start;
 }
 
 .training-config,
 .training-main {
   display: grid;
-  gap: 14px;
+  gap: 16px;
+  min-width: 0;
+}
+
+.training-config {
+  position: sticky;
+  top: 88px;
+  align-self: start;
+  max-height: calc(100vh - 112px);
+  overflow: auto;
 }
 
 .training-config label {
@@ -2838,6 +2912,17 @@ input[type="checkbox"]:focus-visible {
   background: #343435;
 }
 
+.segmented-control.compact {
+  display: flex;
+  flex-wrap: wrap;
+  width: max-content;
+  max-width: 100%;
+}
+
+.segmented-control.compact button {
+  min-width: 72px;
+}
+
 .training-controls {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -2853,26 +2938,110 @@ input[type="checkbox"]:focus-visible {
 }
 
 .training-main {
-  grid-template-columns: repeat(2, minmax(240px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
 }
 
-.training-main .panel:last-child {
-  grid-column: 1 / -1;
+.training-readiness-panel,
+.training-detail {
+  min-width: 0;
+}
+
+.training-readiness-panel {
+  padding: 12px;
+}
+
+.training-readiness-panel .section-heading {
+  margin-bottom: 8px;
+}
+
+.training-readiness-panel .section-heading h2 {
+  font-size: 14px;
+}
+
+.training-accordion-list {
+  display: grid;
+  gap: 6px;
+}
+
+.training-accordion {
+  border: 1px solid #333335;
+  border-radius: 8px;
+  background: #232323;
+}
+
+.training-accordion summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 16px;
+  gap: 12px;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 9px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.training-accordion summary::-webkit-details-marker {
+  display: none;
+}
+
+.training-accordion summary::after {
+  content: "⌄";
+  color: var(--app-text-muted);
+  font-size: 15px;
+  line-height: 1;
+  transition: transform 140ms ease;
+}
+
+.training-accordion[open] summary::after {
+  transform: rotate(180deg);
+}
+
+.training-accordion summary span,
+.training-accordion summary strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.training-accordion summary span {
+  color: var(--app-text-soft);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.training-accordion summary strong {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.training-accordion-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 9px 9px;
+  border-top: 1px solid #303033;
+}
+
+.training-accordion-body .link-button {
+  justify-self: start;
+  margin-top: 8px;
 }
 
 .device-grid,
 .training-stats-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .training-stat {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
-  gap: 8px;
-  min-height: 74px;
-  padding: 12px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 7px;
+  min-height: 58px;
+  padding: 9px;
   border: 1px solid #333335;
   border-radius: 8px;
   background: #232323;
@@ -2888,7 +3057,7 @@ input[type="checkbox"]:focus-visible {
   display: block;
   overflow: hidden;
   color: var(--app-text-muted);
-  font-size: 12px;
+  font-size: 11px;
   font-style: normal;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2897,9 +3066,9 @@ input[type="checkbox"]:focus-visible {
 .training-stat strong {
   display: block;
   overflow: hidden;
-  margin: 5px 0 3px;
+  margin: 3px 0 2px;
   color: var(--app-text);
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2907,7 +3076,7 @@ input[type="checkbox"]:focus-visible {
 
 .model-profile {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .model-profile > strong,
@@ -2925,11 +3094,747 @@ input[type="checkbox"]:focus-visible {
 
 .training-history {
   grid-column: 1 / -1;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.inline-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  gap: 8px;
+}
+
+.table-link {
+  border: 0;
+  padding: 0;
+  color: var(--app-text);
+  background: transparent;
+  font: inherit;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.table-link:hover {
+  color: #9fc7ff;
+}
+
+.job-message.warning {
+  border-color: #6d5c2e;
+  color: #f1d48a;
+  background: #2e2818;
+}
+
+.job-progress-row,
+.split-row,
+.job-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.job-actions {
+  align-items: stretch;
+}
+
+.job-actions .link-button {
+  margin-top: 0;
+}
+
+.job-progress-row {
+  justify-content: space-between;
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+
+.job-progress-row strong {
+  color: var(--app-text);
+}
+
+.progress-track {
+  overflow: hidden;
+  height: 8px;
+  border-radius: 999px;
+  background: #1d1d1f;
+}
+
+.progress-track > div {
+  height: 100%;
+  border-radius: inherit;
+  background: #6aa3ff;
+  transition: width 180ms ease;
+}
+
+.split-row span {
+  padding: 4px 7px;
+  border: 1px solid #333335;
+  border-radius: 8px;
+  color: var(--app-text-muted);
+  background: #232323;
+  font-size: 12px;
+}
+
+.tail-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+
+.tail-select select {
+  min-height: 32px;
+  border: 1px solid #333335;
+  border-radius: 8px;
+  color: var(--app-text);
+  background: #2b2b2c;
+}
+
+.link-button.danger {
+  color: #ff9b9b;
+}
+
+.training-log {
+  overflow: auto;
+  max-height: 340px;
+  min-height: 180px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #333335;
+  border-radius: 8px;
+  color: #d7d7d8;
+  background: #171719;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
 @media (max-width: 1180px) {
-  .training-workspace,
-  .training-main {
+  body {
+    min-width: 0;
+  }
+
+  .shell {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+
+  .training-workspace {
     grid-template-columns: 1fr;
   }
+
+  .training-config {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .training-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+}
+
+@media (max-width: 860px) {
+  .shell {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
+  .brand {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+
+  .brand div,
+  .nav-button span,
+  .utility-button span {
+    display: none;
+  }
+
+  .sidebar {
+    padding: 16px 10px;
+  }
+
+  .workspace {
+    padding: 18px;
+  }
+
+  .topbar {
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .training-main,
+  .training-controls,
+  .control-grid,
+  .device-grid,
+  .training-stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .training-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .training-readiness-panel .section-heading {
+    align-items: center;
+    flex-direction: row;
+  }
+
+  .section-heading .segmented-control.compact {
+    width: 100%;
+  }
+
+  .section-heading .segmented-control.compact button {
+    flex: 1 1 72px;
+  }
+
+  .job-actions .link-button,
+  .tail-select {
+    flex: 1 1 150px;
+  }
+
+  .tail-select {
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .shell {
+    display: block;
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
+  .sidebar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    border-bottom: 1px solid #333335;
+  }
+
+  .brand,
+  .utility-button {
+    min-height: 40px;
+  }
+
+  nav {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+  }
+
+  .nav-button,
+  .utility-button {
+    width: 40px;
+    min-width: 40px;
+    padding: 0;
+  }
+
+  .workspace {
+    overflow: visible;
+    padding: 14px;
+  }
+
+  .topbar h1 {
+    font-size: 22px;
+  }
+
+  .panel {
+    padding: 14px;
+  }
+
+  .training-workspace {
+    gap: 12px;
+  }
+
+  .training-config,
+  .training-main {
+    gap: 12px;
+  }
+
+  .segmented-control {
+    grid-template-columns: 1fr;
+  }
+
+  .training-stat {
+    min-height: 54px;
+  }
+
+  .training-log {
+    max-height: 280px;
+  }
+}
+
+@media (min-width: 1500px) {
+  .training-workspace {
+    grid-template-columns: minmax(380px, 440px) minmax(0, 1fr);
+  }
+
+  .training-detail .training-stats-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Training page restructure --------------------------------------------- */
+.training-workspace {
+  grid-template-columns: minmax(330px, 390px) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.training-overview {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.training-overview-card,
+.training-check-block,
+.training-main {
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-panel);
+}
+
+.training-overview-card {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 88px;
+  padding: 14px;
+  width: 100%;
+  text-align: left;
+}
+
+.training-overview-card svg {
+  margin-top: 2px;
+  color: var(--app-text-muted);
+}
+
+.training-overview-card span,
+.training-overview-card em {
+  display: block;
+  overflow: hidden;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.training-overview-card strong {
+  display: block;
+  overflow: hidden;
+  margin: 5px 0 4px;
+  color: var(--app-text);
+  font-size: 17px;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.training-overview-card.ready {
+  border-color: rgba(57, 217, 138, 0.28);
+}
+
+.training-overview-card.warning {
+  border-color: rgba(241, 212, 138, 0.32);
+}
+
+.training-overview-card.danger {
+  border-color: rgba(255, 95, 104, 0.36);
+}
+
+.training-overview-card.active {
+  border-color: var(--app-accent-border);
+}
+
+.training-overview-card.interactive {
+  cursor: pointer;
+}
+
+.training-overview-card.interactive:hover {
+  border-color: var(--app-border-strong);
+  background: var(--app-panel-soft);
+}
+
+.training-config {
+  position: static;
+  top: auto;
+  max-height: none;
+  overflow: visible;
+  grid-column: 1;
+  grid-row: 2;
+  gap: 14px;
+}
+
+.training-right-column {
+  display: grid;
+  grid-column: 2;
+  grid-row: 2;
+  gap: 14px;
+  align-self: start;
+  min-width: 0;
+}
+
+.training-config .section-heading {
+  padding-bottom: 2px;
+}
+
+.training-disclosure {
+  justify-content: flex-start;
+  width: 100%;
+  border-color: #333335;
+  color: var(--app-text-soft);
+  background: #232323;
+}
+
+.training-disclosure:hover {
+  border-color: #454548;
+  color: var(--app-text);
+  background: #2b2b2c;
+}
+
+.training-primary-action {
+  width: 100%;
+  min-height: 44px;
+}
+
+.training-main {
+  display: grid;
+  grid-column: auto;
+  grid-row: auto;
+  order: 2;
+  gap: 14px;
+  padding: 16px;
+}
+
+.training-history {
+  grid-column: auto;
+  grid-row: auto;
+  order: 1;
+  align-self: start;
+  padding: 16px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-panel);
+}
+
+.training-history .section-heading {
+  margin-bottom: 14px;
+}
+
+.training-history .empty-line {
+  margin: 0;
+  padding: 2px 0 4px;
+}
+
+.training-history .media-table {
+  margin: 0;
+  border-radius: 8px;
+}
+
+.training-job-list {
+  display: grid;
+  gap: 10px;
+}
+
+.training-job-card {
+  overflow: hidden;
+  border: 1px solid #333335;
+  border-radius: 8px;
+  background: #202021;
+}
+
+.training-job-card.expanded {
+  border-color: #454548;
+  background: #232323;
+}
+
+.training-job-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 54px 18px;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.training-job-summary:hover {
+  background: #29292b;
+}
+
+.training-job-summary strong,
+.training-job-summary span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.training-job-summary strong {
+  color: var(--app-text);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.training-job-summary div > span {
+  margin-top: 4px;
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+
+.training-job-progress {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.training-job-chevron {
+  color: var(--app-text-muted);
+  transition: transform 140ms ease;
+}
+
+.training-job-card.expanded .training-job-chevron {
+  transform: rotate(180deg);
+}
+
+.training-job-expanded {
+  display: grid;
+  gap: 12px;
+  padding: 0 12px 12px;
+  border-top: 1px solid #303033;
+}
+
+.training-job-expanded .job-progress-row {
+  margin-top: 12px;
+}
+
+.training-info-modal {
+  display: grid;
+  gap: 14px;
+  width: min(760px, calc(100vw - 40px));
+}
+
+.training-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.training-modal-header h3,
+.training-modal-header span {
+  display: block;
+  margin: 0;
+}
+
+.training-modal-header span {
+  margin-top: 4px;
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+
+.training-main-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.training-main-header h2,
+.training-main-header span {
+  display: block;
+  margin: 0;
+}
+
+.training-main-header span {
+  overflow: hidden;
+  margin-top: 4px;
+  color: var(--app-text-muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.training-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #333335;
+  border-radius: 8px;
+  background: #232323;
+}
+
+.training-tabs button {
+  min-height: 32px;
+  padding: 0 10px;
+  border-color: transparent;
+  border-radius: 6px;
+  color: var(--app-text-muted);
+  background: transparent;
+}
+
+.training-tabs button.active {
+  color: var(--app-text);
+  background: #343435;
+}
+
+.training-checks {
+  display: grid;
+  gap: 10px;
+}
+
+.training-check-block {
+  overflow: hidden;
+}
+
+.training-check-block > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 0 12px;
+  border-bottom: 1px solid #303033;
+}
+
+.training-check-block > header div {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.training-check-block > header strong,
+.training-check-block > header span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.training-check-block > header strong {
+  color: var(--app-text);
+  font-size: 13px;
+}
+
+.training-check-block > header span {
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+
+.training-check-block.ready > header svg {
+  color: var(--app-success);
+}
+
+.training-check-block.warning > header svg {
+  color: #f1d48a;
+}
+
+.training-check-block.danger > header svg {
+  color: #ff9b9b;
+}
+
+.training-check-body {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.training-main .job-actions {
+  padding-top: 2px;
+}
+
+.training-main .training-log {
+  max-height: 480px;
+}
+
+@media (max-width: 1280px) {
+  .training-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1180px) {
+  .training-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .training-config,
+  .training-right-column,
+  .training-history,
+  .training-main {
+    grid-column: 1;
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 860px) {
+  .training-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .training-main-header {
+    grid-template-columns: 1fr;
+  }
+
+  .training-tabs {
+    width: 100%;
+  }
+
+  .training-tabs button {
+    flex: 1 1 0;
+  }
+}
+
+.job-done-badge,
+.job-status-badge[data-status="completed"],
+.job-status-badge[data-status="failed"],
+.job-status-badge[data-status="queued"],
+.job-status-badge[data-status="running"],
+.job-status-badge[data-status="exported"],
+.job-status-badge[data-status="cancelled"] {
+  color: #fff;
+}
+
+.job-done-badge,
+.job-status-badge[data-status="completed"] {
+  background: #16a34a;
+}
+
+.dataset-card .public-loaded-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: max-content;
+  min-height: 28px;
+  padding: 4px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  color: #fff;
+  background: #16a34a;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
 }

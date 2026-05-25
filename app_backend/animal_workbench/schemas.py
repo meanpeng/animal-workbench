@@ -129,3 +129,7 @@ class TrainingJobCreate(BaseModel):
 class ModelProfileRequest(BaseModel):
     model_id: int | None = None
     model_path: str | None = Field(default=None, max_length=500)
+
+
+class StorageSettingsUpdate(BaseModel):
+    data_root: str = Field(min_length=1, max_length=500)

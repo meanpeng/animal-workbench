@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS dataset_assets (
   dataset_id INTEGER NOT NULL,
   media_asset_id INTEGER NOT NULL,
   split TEXT NOT NULL DEFAULT 'train' CHECK(split IN ('train', 'val', 'test', 'unassigned')),
+  annotation_status TEXT NOT NULL DEFAULT 'unannotated' CHECK(annotation_status IN ('unannotated', 'annotated')),
   added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(dataset_id, media_asset_id),
   FOREIGN KEY(dataset_id) REFERENCES datasets(id) ON DELETE CASCADE,
@@ -173,7 +174,7 @@ CREATE TABLE IF NOT EXISTS training_jobs (
 CREATE TABLE IF NOT EXISTS dataset_jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id INTEGER NOT NULL,
-  job_type TEXT NOT NULL CHECK(job_type IN ('public_download', 'public_import', 'folder_import')),
+  job_type TEXT NOT NULL CHECK(job_type IN ('public_download', 'public_import', 'folder_import', 'fusion_build')),
   status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued', 'running', 'completed', 'failed')),
   stage TEXT NOT NULL DEFAULT 'queued',
   percent REAL NOT NULL DEFAULT 0,

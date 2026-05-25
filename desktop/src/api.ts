@@ -6,13 +6,16 @@ import type {
   Dataset,
   DatasetDetail,
   DeviceStatus,
+  DatasetTrainingSummary,
   Experiment,
   MediaAsset,
   ModelProfile,
   ModelItem,
   PublicDataset,
+  StorageSettings,
   Summary,
   TrainingJob,
+  TrainingLog,
 } from "./types";
 
 export const API_BASE = import.meta.env.VITE_WORKBENCH_API ?? "http://127.0.0.1:8765";
@@ -34,6 +37,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => request<{ ok: boolean; workspace: string }>("/health"),
+  storageSettings: () => request<StorageSettings>("/settings/storage"),
+  updateStorageSettings: (payload: { data_root: string }) =>
+    request<StorageSettings>("/settings/storage", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
   summary: () => request<Summary>("/summary"),
   media: () => request<MediaAsset[]>("/media"),
   importMedia: (paths: string[], batchName: string, extractFrames = false) =>
@@ -66,6 +75,10 @@ export const api = {
     request<{ annotations: AnnotationItem[] }>(`/media/${mediaAssetId}/annotations/bulk?dataset_id=${datasetId}`, {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+  markMediaAnnotated: (datasetId: number, mediaAssetId: number) =>
+    request<{ ok: boolean }>(`/datasets/${datasetId}/media/${mediaAssetId}/annotation-status?status=annotated`, {
+      method: "PUT",
     }),
   importDatasetFolder: (payload: {
     path: string;
@@ -103,6 +116,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  createFusionDatasetJob: (payload: { name: string; source_dataset_ids: number[] }) =>
+    request<DatasetJob>("/dataset-jobs/fusion", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   addMediaToDataset: (datasetId: number, mediaAssetIds: number[]) =>
     request<Dataset>(`/datasets/${datasetId}/media`, {
       method: "POST",
@@ -121,7 +139,14 @@ export const api = {
     )
   ).toString()}`),
   batches: () => request<AnnotationBatch[]>("/annotation-batches"),
-  jobs: () => request<TrainingJob[]>("/training-jobs"),
+  jobs: (status?: string) => request<TrainingJob[]>(`/training-jobs${status && status !== "all" ? `?status=${encodeURIComponent(status)}` : ""}`),
+  trainingJob: (jobId: number) => request<TrainingJob>(`/training-jobs/${jobId}`),
+  trainingJobEventsUrl: (jobId: number) => `${API_BASE}/training-jobs/${jobId}/events`,
+  trainingJobLog: (jobId: number, tail = 200) => request<TrainingLog>(`/training-jobs/${jobId}/log?tail=${tail}`),
+  cancelTrainingJob: (jobId: number) => request<TrainingJob>(`/training-jobs/${jobId}/cancel`, { method: "POST" }),
+  retryTrainingJob: (jobId: number) => request<TrainingJob>(`/training-jobs/${jobId}/retry`, { method: "POST" }),
+  resumeTrainingJob: (jobId: number) => request<TrainingJob>(`/training-jobs/${jobId}/resume`, { method: "POST" }),
+  datasetTrainingSummary: (datasetId: number) => request<DatasetTrainingSummary>(`/datasets/${datasetId}/training-summary`),
   trainingDeviceStatus: () => request<DeviceStatus>("/training/device-status"),
   modelProfile: (payload: { model_id?: number; model_path?: string }) =>
     request<ModelProfile>("/training/model-profile", {
@@ -149,6 +174,7 @@ export const api = {
       workers?: number;
       cache?: boolean;
       augment?: boolean;
+      optimizer?: string;
     };
   }) =>
     request<TrainingJob>("/training-jobs", {

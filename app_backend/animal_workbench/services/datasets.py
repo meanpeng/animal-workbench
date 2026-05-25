@@ -5,6 +5,25 @@ from typing import Any
 
 from ..repository import json_dumps, json_loads
 
+_CHUNK_SIZE = 500
+
+
+def _chunked_in(conn: sqlite3.Connection, sql_template: str, ids: list[int], prefix_params: tuple = (), suffix_params: tuple = ()) -> list[sqlite3.Row]:
+    """Execute *sql_template* with ``IN (?)`` replaced by chunked placeholders.
+
+    sql_template must contain exactly one ``{ph}`` marker where the
+    ``?, ?, …`` placeholders should go. Returns combined rows.
+    """
+    if not ids:
+        return []
+    all_rows: list[sqlite3.Row] = []
+    for i in range(0, len(ids), _CHUNK_SIZE):
+        chunk = ids[i : i + _CHUNK_SIZE]
+        placeholders = ",".join("?" for _ in chunk)
+        sql = sql_template.format(ph=placeholders)
+        all_rows.extend(conn.execute(sql, (*prefix_params, *chunk, *suffix_params)).fetchall())
+    return all_rows
+
 
 def create_dataset(
     conn: sqlite3.Connection,
@@ -42,13 +61,9 @@ def create_fusion_dataset(
     source_dataset_ids: list[int],
 ) -> dict[str, Any]:
     unique_source_ids = list(dict.fromkeys(source_dataset_ids))
-    placeholders = ",".join("?" for _ in unique_source_ids)
-    rows = conn.execute(
-        f"SELECT id FROM datasets WHERE project_id = ? AND id IN ({placeholders})",
-        (project_id, *unique_source_ids),
-    ).fetchall()
+    rows = _chunked_in(conn, "SELECT id FROM datasets WHERE project_id = ? AND id IN ({ph})", unique_source_ids, prefix_params=(project_id,))
     owned = {int(row["id"]) for row in rows}
-    missing = [dataset_id for dataset_id in unique_source_ids if dataset_id not in owned]
+    missing = [ds_id for ds_id in unique_source_ids if ds_id not in owned]
     if missing:
         raise ValueError(f"Datasets do not belong to the current project: {missing}")
 
@@ -65,6 +80,7 @@ def create_fusion_dataset(
         ),
     )
     dataset_id = int(cursor.lastrowid)
+    placeholders = ",".join("?" for _ in unique_source_ids)
     conn.execute(
         f"""
         INSERT OR IGNORE INTO dataset_assets(dataset_id, media_asset_id, split)
@@ -74,11 +90,7 @@ def create_fusion_dataset(
         """,
         (dataset_id, *unique_source_ids),
     )
-    media_rows = conn.execute(
-        "SELECT media_asset_id FROM dataset_assets WHERE dataset_id = ?",
-        (dataset_id,),
-    ).fetchall()
-    bind_annotated_media_classes(conn, project_id, dataset_id, [int(row["media_asset_id"]) for row in media_rows])
+    bind_annotated_media_classes(conn, project_id, dataset_id)
     refresh_dataset_counts(conn, project_id, dataset_id)
     conn.commit()
     return dict(conn.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,)).fetchone())
@@ -165,21 +177,43 @@ def bind_annotated_media_classes(
     conn: sqlite3.Connection,
     project_id: int,
     dataset_id: int,
-    media_asset_ids: list[int],
+    media_asset_ids: list[int] | None = None,
 ) -> None:
-    if not media_asset_ids:
+    """Bind classes that appear in annotations for this dataset's media assets.
+
+    If *media_asset_ids* is provided, only those assets are considered.
+    Otherwise all media in the dataset is checked (avoids passing large ID
+    lists through Python — the database joins directly).
+    """
+    if media_asset_ids is None:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT a.class_id
+            FROM annotations a
+            JOIN classes cl ON cl.id = a.class_id
+            WHERE a.project_id = ? AND cl.project_id = ?
+              AND a.media_asset_id IN (
+                SELECT media_asset_id FROM dataset_assets WHERE dataset_id = ?
+              )
+            ORDER BY cl.sort_order, cl.id
+            """,
+            (project_id, project_id, dataset_id),
+        ).fetchall()
+    elif media_asset_ids:
+        rows = _chunked_in(
+            conn,
+            """
+            SELECT DISTINCT a.class_id
+            FROM annotations a
+            JOIN classes cl ON cl.id = a.class_id
+            WHERE a.project_id = ? AND cl.project_id = ? AND a.media_asset_id IN ({ph})
+            ORDER BY cl.sort_order, cl.id
+            """,
+            media_asset_ids,
+            prefix_params=(project_id, project_id),
+        )
+    else:
         return
-    placeholders = ",".join("?" for _ in media_asset_ids)
-    rows = conn.execute(
-        f"""
-        SELECT DISTINCT a.class_id
-        FROM annotations a
-        JOIN classes cl ON cl.id = a.class_id
-        WHERE a.project_id = ? AND cl.project_id = ? AND a.media_asset_id IN ({placeholders})
-        ORDER BY cl.sort_order, cl.id
-        """,
-        (project_id, project_id, *media_asset_ids),
-    ).fetchall()
     bind_classes_to_dataset(conn, project_id, dataset_id, [int(row["class_id"]) for row in rows])
 
 
@@ -235,11 +269,7 @@ def owned_media_ids(conn: sqlite3.Connection, project_id: int, media_asset_ids: 
     unique_ids = list(dict.fromkeys(media_asset_ids))
     if not unique_ids:
         return []
-    placeholders = ",".join("?" for _ in unique_ids)
-    rows = conn.execute(
-        f"SELECT id FROM media_assets WHERE project_id = ? AND id IN ({placeholders})",
-        (project_id, *unique_ids),
-    ).fetchall()
+    rows = _chunked_in(conn, "SELECT id FROM media_assets WHERE project_id = ? AND id IN ({ph})", unique_ids, prefix_params=(project_id,))
     owned = {int(row["id"]) for row in rows}
     missing = [media_id for media_id in unique_ids if media_id not in owned]
     if missing:

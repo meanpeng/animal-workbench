@@ -30,6 +30,7 @@ def import_dataset_folder(
     target_dataset: dict[str, Any] | None = None,
     reporter: JobReporter | None = None,
     extract_frames: bool = False,
+    skip_copy: bool = True,
 ) -> dict[str, Any]:
     root = Path(folder).expanduser().resolve()
     if not root.exists() or not root.is_dir():
@@ -54,6 +55,7 @@ def import_dataset_folder(
             target_dataset=target_dataset,
             reporter=reporter,
             extract_frames=extract_frames,
+            skip_copy=skip_copy,
         )
     # labeled datasets only handle images (parse_dataset_folder already filters),
     # so extract_frames is irrelevant here
@@ -67,6 +69,7 @@ def import_dataset_folder(
         dataset_type=dataset_type,
         target_dataset=target_dataset,
         reporter=reporter,
+        skip_copy=skip_copy,
     )
 
 
@@ -79,8 +82,9 @@ def _batch_register_media_assets(
     *,
     progress_base: float = 15,
     progress_range: float = 55,
+    skip_copy: bool = True,
 ) -> dict[Path, dict[str, Any]]:
-    """Hash and copy files in parallel, then return assets by source path."""
+    """Hash and (optionally) copy files in parallel, then return assets by source path."""
     if not items:
         return {}
 
@@ -132,17 +136,20 @@ def _batch_register_media_assets(
         else:
             to_prepare.append((path, source_kind, checksum))
 
-    # Phase 3: Copy files and read dimensions in parallel.
+    # Phase 3: Copy (or reference) files and read dimensions in parallel.
     def _prepare(item: tuple[Path, str, str]) -> tuple[Path, str, str, str, int | None, int | None, str] | None:
         path, source_kind, checksum = item
         try:
             suffix = path.suffix.lower()
             width, height = image_dimensions(path)
-            storage_dir = paths.media_dir / checksum[:2] / checksum[2:4]
-            storage_dir.mkdir(parents=True, exist_ok=True)
-            internal_path = storage_dir / f"{uuid.uuid4().hex}{suffix}"
-            shutil.copy2(path, internal_path)
-            return path, source_kind, checksum, suffix, width, height, str(internal_path)
+            if skip_copy:
+                internal_path = str(path.resolve())
+            else:
+                storage_dir = paths.media_dir / checksum[:2] / checksum[2:4]
+                storage_dir.mkdir(parents=True, exist_ok=True)
+                internal_path = str((storage_dir / f"{uuid.uuid4().hex}{suffix}").resolve())
+                shutil.copy2(path, internal_path)
+            return path, source_kind, checksum, suffix, width, height, internal_path
         except Exception:
             return None
 
@@ -159,26 +166,36 @@ def _batch_register_media_assets(
                 done += 1
                 if reporter and (done % 20 == 0 or done == prep_total):
                     reporter.update_on(
-                        conn, stage="copying",
+                        conn, stage="copying" if not skip_copy else "registering",
                         percent=progress_base + progress_range * 0.5 + progress_range * 0.3 * done / max(prep_total, 1),
                         current=done, total=prep_total,
-                        message=f"已复制文件 {done}/{prep_total}",
+                        message=f"{'已复制文件' if not skip_copy else '已注册文件'} {done}/{prep_total}",
                     )
 
     # Phase 4: Write database rows sequentially.
     for path, source_kind, checksum, suffix, width, height, internal_path in prepared:
+        # Re-check in case another batch or thread already inserted this checksum.
+        if checksum in checksum_to_asset:
+            path_to_asset[path] = checksum_to_asset[checksum]
+            continue
         media_type = "image" if suffix in IMAGE_EXTENSIONS else "video"
-        cursor = conn.execute(
-            """
-            INSERT INTO media_assets(
-              project_id, media_type, original_name, source_kind,
-              width, height, checksum_sha256, internal_path
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO media_assets(
+                  project_id, media_type, original_name, source_kind,
+                  width, height, checksum_sha256, internal_path
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (project_id, media_type, path.name, source_kind, width, height, checksum, internal_path),
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (project_id, media_type, path.name, source_kind, width, height, checksum, internal_path),
-        )
-        asset = dict(conn.execute("SELECT * FROM media_assets WHERE id = ?", (cursor.lastrowid,)).fetchone())
+            asset = dict(conn.execute("SELECT * FROM media_assets WHERE id = ?", (cursor.lastrowid,)).fetchone())
+        except sqlite3.IntegrityError:
+            asset = dict(conn.execute(
+                "SELECT * FROM media_assets WHERE project_id = ? AND checksum_sha256 = ?",
+                (project_id, checksum),
+            ).fetchone())
         checksum_to_asset[checksum] = asset
         path_to_asset[path] = asset
 
@@ -197,6 +214,7 @@ def import_unlabeled_folder(
     target_dataset: dict[str, Any] | None = None,
     reporter: JobReporter | None,
     extract_frames: bool = False,
+    skip_copy: bool = True,
 ) -> dict[str, Any]:
     files = iter_importable_files([str(root)])
     paths = get_paths()
@@ -249,7 +267,7 @@ def import_unlabeled_folder(
 
     path_to_asset = _batch_register_media_assets(
         conn, project_id, items, paths, reporter,
-        progress_base=15, progress_range=55,
+        progress_base=15, progress_range=55, skip_copy=skip_copy,
     )
     imported = [path_to_asset[path] for path in to_import if path in path_to_asset]
 
@@ -326,6 +344,7 @@ def import_parsed_labeled_dataset(
     dataset_type: str | None = None,
     target_dataset: dict[str, Any] | None = None,
     reporter: JobReporter | None,
+    skip_copy: bool = True,
 ) -> dict[str, Any]:
     if reporter:
         reporter.update_on(conn, stage="parsing", percent=10, current=len(parsed.samples), total=len(parsed.samples), message=f"识别到 {parsed.format} 标注")
@@ -341,7 +360,7 @@ def import_parsed_labeled_dataset(
     items = [(sample.image_path, "dataset_import") for sample in parsed.samples]
     path_to_asset = _batch_register_media_assets(
         conn, project_id, items, paths, reporter,
-        progress_base=20, progress_range=35,
+        progress_base=20, progress_range=35, skip_copy=skip_copy,
     )
     media_by_path: dict[Path, dict[str, Any]] = {}
     for sample in parsed.samples:

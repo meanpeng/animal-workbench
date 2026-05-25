@@ -5,6 +5,7 @@ import json
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from animal_workbench.config import get_paths
 from animal_workbench.main import app
 
 
@@ -229,3 +230,43 @@ def test_create_fusion_dataset_from_existing_datasets(tmp_path, monkeypatch):
 
         detail = client.get(f"/datasets/{created.json()['id']}/media").json()
         assert detail["total"] == 2
+
+
+def test_delete_public_dataset_removes_managed_materialized_cache_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANIMAL_WORKBENCH_HOME", str(tmp_path / "app-home"))
+    paths = get_paths()
+    managed = paths.public_data_dir / "swg" / "materialized_yolo"
+    managed.mkdir(parents=True)
+    (managed / "dataset.yaml").write_text("names: []\n", encoding="utf-8")
+
+    external = tmp_path / "external" / "materialized_yolo"
+    external.mkdir(parents=True)
+    (external / "keep.txt").write_text("keep", encoding="utf-8")
+
+    with TestClient(app) as client:
+        dataset = client.post(
+            "/datasets",
+            json={
+                "name": "managed public",
+                "dataset_type": "public",
+                "media_asset_ids": [],
+                "composition_rule": {"source_path": str(managed)},
+            },
+        ).json()
+        deleted = client.delete(f"/datasets/{dataset['id']}")
+        assert deleted.status_code == 200
+        assert not managed.exists()
+
+        dataset = client.post(
+            "/datasets",
+            json={
+                "name": "external public",
+                "dataset_type": "public",
+                "media_asset_ids": [],
+                "composition_rule": {"source_path": str(external)},
+            },
+        ).json()
+        deleted = client.delete(f"/datasets/{dataset['id']}")
+        assert deleted.status_code == 200
+        assert external.exists()
+        assert (external / "keep.txt").exists()

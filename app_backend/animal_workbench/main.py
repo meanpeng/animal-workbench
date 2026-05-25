@@ -4,14 +4,16 @@ from contextlib import asynccontextmanager
 import asyncio
 import json
 from pathlib import Path
+import shutil
+import threading
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
-from .config import ensure_paths, get_paths
+from .config import ensure_paths, get_paths, set_data_root
 from .db import connect, init_db, rows_to_dicts
-from .repository import current_project, current_project_id, dashboard_summary, json_dumps, list_classes, list_dataset_classes
+from .repository import current_project, current_project_id, dashboard_summary, json_dumps, json_loads, list_classes, list_dataset_classes
 from .class_colors import class_color_for_index
 from .schemas import (
     AnnotationBatchCreate,
@@ -27,6 +29,7 @@ from .schemas import (
     ModelProfileRequest,
     ProjectCreate,
     PublicDatasetJobRequest,
+    StorageSettingsUpdate,
     TrainingJobCreate,
 )
 from .services.datasets import add_media_to_dataset, bind_class_to_dataset, create_dataset, create_fusion_dataset, refresh_dataset_counts
@@ -36,7 +39,18 @@ from .services.media import import_media
 from .services.public_catalog import list_public_dataset_statuses, public_spec
 from .services.public_downloads import prepare_public_dataset
 from .services.public_import import import_public_dataset
-from .services.training import create_training_job, device_status, profile_model, run_training_job
+from .services.training import (
+    cancel_training_job,
+    clone_training_job,
+    create_training_job,
+    dataset_training_summary,
+    device_status,
+    get_training_job,
+    list_training_jobs as list_training_jobs_service,
+    profile_model,
+    read_job_log,
+    run_training_job,
+)
 
 
 @asynccontextmanager
@@ -115,6 +129,30 @@ app.add_middleware(
 def health() -> dict:
     paths = get_paths()
     return {"ok": True, "workspace": str(paths.root)}
+
+
+@app.get("/settings/storage")
+def get_storage_settings() -> dict:
+    paths = ensure_paths()
+    return {
+        "app_root": str(paths.root),
+        "data_root": str(paths.data_root),
+        "db_path": str(paths.db_path),
+        "media_dir": str(paths.media_dir),
+        "public_data_dir": str(paths.public_data_dir),
+        "runtime_dir": str(paths.runtime_dir),
+        "log_dir": str(paths.log_dir),
+    }
+
+
+@app.put("/settings/storage")
+def update_storage_settings(payload: StorageSettingsUpdate) -> dict:
+    data_root = Path(payload.data_root).expanduser().resolve()
+    if data_root.drive and data_root.drive.upper().startswith("C:"):
+        raise HTTPException(status_code=422, detail="请选择 C 盘以外的数据目录。")
+    set_data_root(data_root)
+    ensure_paths()
+    return get_storage_settings()
 
 
 @app.get("/summary")
@@ -400,39 +438,72 @@ def list_media(limit: int = 200, offset: int = 0) -> list[dict]:
         )
 
 
+def _cleanup_orphan_media(conn, project_id: int) -> tuple[int, int]:
+    """Delete media files and rows not referenced by any dataset/annotation/prediction."""
+    import os
+    from .config import get_paths
+    media_dir = str(get_paths().media_dir.resolve())
+    orphans = conn.execute(
+        """
+        SELECT m.id, m.internal_path
+        FROM media_assets m
+        WHERE m.project_id = ?
+          AND m.id NOT IN (SELECT DISTINCT media_asset_id FROM dataset_assets)
+          AND m.id NOT IN (SELECT DISTINCT media_asset_id FROM annotations)
+          AND m.id NOT IN (SELECT DISTINCT media_asset_id FROM annotation_batch_items)
+          AND m.id NOT IN (SELECT DISTINCT media_asset_id FROM predictions)
+          AND m.id NOT IN (SELECT DISTINCT parent_asset_id FROM media_assets WHERE parent_asset_id IS NOT NULL)
+        """,
+        (project_id,),
+    ).fetchall()
+
+    deleted_files = 0
+    deleted_rows = 0
+    for row in orphans:
+        path = row["internal_path"]
+        # Only delete files that are inside managed storage, not externally referenced.
+        if path and os.path.isfile(path) and os.path.abspath(path).startswith(media_dir):
+            try:
+                os.remove(path)
+                deleted_files += 1
+            except OSError:
+                pass
+        conn.execute("DELETE FROM media_assets WHERE id = ?", (row["id"],))
+        deleted_rows += 1
+
+    return deleted_rows, deleted_files
+
+
+def _cleanup_public_dataset_cache(dataset: dict) -> bool:
+    if dataset.get("dataset_type") != "public":
+        return False
+    composition = json_loads(dataset.get("composition_rule"), {})
+    source_path = composition.get("source_path")
+    if not source_path:
+        return False
+
+    paths = get_paths()
+    try:
+        materialized = Path(source_path).resolve()
+        public_root = paths.public_data_dir.resolve()
+        relative = materialized.relative_to(public_root)
+    except (OSError, ValueError):
+        return False
+
+    if relative.name != "materialized_yolo" or len(relative.parts) != 2:
+        return False
+    if materialized.exists() and materialized.is_dir():
+        shutil.rmtree(materialized)
+        return True
+    return False
+
+
 @app.post("/media/cleanup-orphans")
 def cleanup_orphan_media() -> dict:
     """Delete media files and rows that are not referenced by any dataset."""
-    import os
     with connect() as conn:
         project_id = current_project_id(conn)
-        orphans = conn.execute(
-            """
-            SELECT m.id, m.internal_path
-            FROM media_assets m
-            WHERE m.project_id = ?
-              AND m.id NOT IN (SELECT DISTINCT media_asset_id FROM dataset_assets)
-              AND m.id NOT IN (SELECT DISTINCT media_asset_id FROM annotations)
-              AND m.id NOT IN (SELECT DISTINCT media_asset_id FROM annotation_batch_items)
-              AND m.id NOT IN (SELECT DISTINCT media_asset_id FROM predictions)
-              AND m.id NOT IN (SELECT DISTINCT parent_asset_id FROM media_assets WHERE parent_asset_id IS NOT NULL)
-            """,
-            (project_id,),
-        ).fetchall()
-
-        deleted_files = 0
-        deleted_rows = 0
-        for row in orphans:
-            path = row["internal_path"]
-            if path and os.path.isfile(path):
-                try:
-                    os.remove(path)
-                    deleted_files += 1
-                except OSError:
-                    pass
-            conn.execute("DELETE FROM media_assets WHERE id = ?", (row["id"],))
-            deleted_rows += 1
-
+        deleted_rows, deleted_files = _cleanup_orphan_media(conn, project_id)
         conn.commit()
         return {"deleted_rows": deleted_rows, "deleted_files": deleted_files}
 
@@ -524,12 +595,16 @@ def require_media_assets(conn, project_id: int, media_asset_ids: list[int]) -> N
     unique_ids = list(dict.fromkeys(media_asset_ids))
     if not unique_ids:
         return
-    placeholders = ",".join("?" for _ in unique_ids)
-    rows = conn.execute(
-        f"SELECT id FROM media_assets WHERE project_id = ? AND id IN ({placeholders})",
-        (project_id, *unique_ids),
-    ).fetchall()
-    owned = {int(row["id"]) for row in rows}
+    _CHUNK = 500
+    owned: set[int] = set()
+    for ci in range(0, len(unique_ids), _CHUNK):
+        chunk = unique_ids[ci : ci + _CHUNK]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT id FROM media_assets WHERE project_id = ? AND id IN ({placeholders})",
+            (project_id, *chunk),
+        ).fetchall()
+        owned |= {int(row["id"]) for row in rows}
     missing = [media_id for media_id in unique_ids if media_id not in owned]
     if missing:
         raise HTTPException(status_code=422, detail=f"Media assets do not belong to the current project: {missing}")
@@ -638,6 +713,33 @@ def create_fusion_dataset_endpoint(payload: DatasetFusionCreate) -> dict:
             raise HTTPException(status_code=422, detail=str(exc))
 
 
+@app.post("/dataset-jobs/fusion")
+def start_fusion_dataset_job(payload: DatasetFusionCreate) -> dict:
+    with connect() as conn:
+        project_id = current_project_id(conn)
+        job = create_dataset_job(
+            conn,
+            project_id,
+            "fusion_build",
+            payload.model_dump(),
+            message="融合数据集构建任务已排队",
+        )
+
+    def run(reporter):
+        reporter.update(stage="building", percent=10, message="正在从已选数据集构建融合数据集")
+        with connect() as thread_conn:
+            result = create_fusion_dataset(
+                thread_conn,
+                project_id,
+                payload.name,
+                payload.source_dataset_ids,
+            )
+        reporter.complete(result, f"融合数据集「{result['name']}」已构建")
+
+    start_dataset_job(job["id"], run)
+    return job
+
+
 @app.get("/datasets")
 def list_datasets() -> list[dict]:
     with connect() as conn:
@@ -686,8 +788,15 @@ def delete_dataset_endpoint(dataset_id: int) -> dict:
             "DELETE FROM training_jobs WHERE dataset_id = ?", (dataset_id,)
         )
 
+        dataset_for_cleanup = dict(dataset)
+
         # delete the dataset (cascade deletes dataset_assets)
         conn.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
+
+        # clean up orphaned media assets and their files
+        _cleanup_orphan_media(conn, project_id)
+        _cleanup_public_dataset_cache(dataset_for_cleanup)
+
         conn.commit()
         return {"deleted": dataset_id}
 
@@ -719,7 +828,10 @@ def dataset_media(
             SELECT
                 COUNT(DISTINCT da.media_asset_id) AS total_media,
                 COUNT(DISTINCT a.id) AS total_annotations,
-                COUNT(DISTINCT CASE WHEN a.id IS NOT NULL THEN da.media_asset_id END) AS annotated_media
+                COUNT(DISTINCT CASE
+                    WHEN da.annotation_status = 'annotated' THEN da.media_asset_id
+                    WHEN a.id IS NOT NULL THEN da.media_asset_id
+                END) AS annotated_media
             FROM dataset_assets da
             LEFT JOIN annotations a
               ON a.media_asset_id = da.media_asset_id
@@ -776,19 +888,19 @@ def dataset_media(
         if annotation_status == "annotated":
             conditions.append(
                 """
-                EXISTS (
+                (da.annotation_status = 'annotated' OR EXISTS (
                     SELECT 1
                     FROM annotations a2
                     JOIN dataset_classes dc2 ON dc2.dataset_id = ? AND dc2.class_id = a2.class_id
                     WHERE a2.media_asset_id = ma.id AND a2.project_id = ?
-                )
+                ))
                 """
             )
             params.extend([dataset_id, project_id])
         elif annotation_status == "unannotated":
             conditions.append(
                 """
-                NOT EXISTS (
+                da.annotation_status = 'unannotated' AND NOT EXISTS (
                     SELECT 1
                     FROM annotations a2
                     JOIN dataset_classes dc2 ON dc2.dataset_id = ? AND dc2.class_id = a2.class_id
@@ -818,7 +930,8 @@ def dataset_media(
                 f"""
                 SELECT
                     ma.id, ma.media_type, ma.original_name,
-                    ma.camera_site, ma.width, ma.height, ma.created_at
+                    ma.camera_site, ma.width, ma.height, ma.created_at,
+                    da.annotation_status
                 FROM dataset_assets da
                 JOIN media_assets ma ON ma.id = da.media_asset_id
                 WHERE {where_clause} AND ma.project_id = ?
@@ -833,35 +946,38 @@ def dataset_media(
         media_ids = [row["id"] for row in rows]
         ann_count_map: dict[int, int] = {}
         class_names_map: dict[int, list[str]] = {}
+        _CHUNK = 500
         if media_ids:
-            placeholders = ",".join("?" for _ in media_ids)
-            ann_rows = conn.execute(
-                f"""
-                SELECT a.media_asset_id, COUNT(*) AS cnt
-                FROM annotations a
-                JOIN dataset_classes dc ON dc.dataset_id = ? AND dc.class_id = a.class_id
-                WHERE a.media_asset_id IN ({placeholders}) AND a.project_id = ?
-                GROUP BY a.media_asset_id
-                """,
-                [dataset_id, *media_ids, project_id],
-            ).fetchall()
-            for r in ann_rows:
-                ann_count_map[int(r["media_asset_id"])] = int(r["cnt"])
+            for ci in range(0, len(media_ids), _CHUNK):
+                chunk = media_ids[ci : ci + _CHUNK]
+                placeholders = ",".join("?" for _ in chunk)
+                ann_rows = conn.execute(
+                    f"""
+                    SELECT a.media_asset_id, COUNT(*) AS cnt
+                    FROM annotations a
+                    JOIN dataset_classes dc ON dc.dataset_id = ? AND dc.class_id = a.class_id
+                    WHERE a.media_asset_id IN ({placeholders}) AND a.project_id = ?
+                    GROUP BY a.media_asset_id
+                    """,
+                    [dataset_id, *chunk, project_id],
+                ).fetchall()
+                for r in ann_rows:
+                    ann_count_map[int(r["media_asset_id"])] = int(r["cnt"])
 
-            class_rows_for_media = conn.execute(
-                f"""
-                SELECT a.media_asset_id, cl.display_name
-                FROM annotations a
-                JOIN dataset_classes dc ON dc.dataset_id = ? AND dc.class_id = a.class_id
-                JOIN classes cl ON cl.id = a.class_id
-                WHERE a.media_asset_id IN ({placeholders}) AND a.project_id = ?
-                GROUP BY a.media_asset_id, cl.id
-                """,
-                [dataset_id, *media_ids, project_id],
-            ).fetchall()
-            for row2 in class_rows_for_media:
-                media_id = int(row2["media_asset_id"])
-                class_names_map.setdefault(media_id, []).append(row2["display_name"])
+                class_rows_for_media = conn.execute(
+                    f"""
+                    SELECT a.media_asset_id, cl.display_name
+                    FROM annotations a
+                    JOIN dataset_classes dc ON dc.dataset_id = ? AND dc.class_id = a.class_id
+                    JOIN classes cl ON cl.id = a.class_id
+                    WHERE a.media_asset_id IN ({placeholders}) AND a.project_id = ?
+                    GROUP BY a.media_asset_id, cl.id
+                    """,
+                    [dataset_id, *chunk, project_id],
+                ).fetchall()
+                for row2 in class_rows_for_media:
+                    media_id = int(row2["media_asset_id"])
+                    class_names_map.setdefault(media_id, []).append(row2["display_name"])
 
         media_list = []
         for row in rows:
@@ -873,6 +989,7 @@ def dataset_media(
                 "width": row["width"],
                 "height": row["height"],
                 "annotation_count": ann_count_map.get(row["id"], 0),
+                "annotation_status": row["annotation_status"],
                 "class_names": class_names_map.get(row["id"], []),
             })
 
@@ -1205,6 +1322,14 @@ def bulk_save_media_annotations(media_asset_id: int, payload: AnnotationBulkSave
                         ),
                     )
             sync_annotation_dependents(conn, project_id, media_asset_id)
+            conn.execute(
+                """
+                UPDATE dataset_assets
+                SET annotation_status = 'annotated'
+                WHERE dataset_id = ? AND media_asset_id = ?
+                """,
+                (dataset_id, media_asset_id),
+            )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -1226,13 +1351,111 @@ def bulk_save_media_annotations(media_asset_id: int, payload: AnnotationBulkSave
         }
 
 
+@app.put("/datasets/{dataset_id}/media/{media_asset_id}/annotation-status")
+def mark_media_annotation_status(dataset_id: int, media_asset_id: int, status: str = "annotated") -> dict:
+    with connect() as conn:
+        project_id = current_project_id(conn)
+        require_media_asset(conn, project_id, media_asset_id)
+        require_media_in_dataset(conn, project_id, dataset_id, media_asset_id)
+        conn.execute(
+            """
+            UPDATE dataset_assets
+            SET annotation_status = ?
+            WHERE dataset_id = ? AND media_asset_id = ?
+            """,
+            (status, dataset_id, media_asset_id),
+        )
+        conn.commit()
+        return {"ok": True}
+
+
 @app.post("/training-jobs")
 def create_training_job_endpoint(payload: TrainingJobCreate, background_tasks: BackgroundTasks) -> dict:
     with connect() as conn:
         project_id = current_project_id(conn)
         require_dataset(conn, project_id, payload.dataset_id)
+        summary = dataset_training_summary(conn, project_id, payload.dataset_id)
+        if not summary["ready"]:
+            raise HTTPException(status_code=422, detail={"message": "Dataset is not ready for training.", "summary": summary})
+        if payload.run_yolo and payload.device not in {"auto", "cpu"}:
+            status = device_status()
+            if not status.get("cuda_available"):
+                raise HTTPException(status_code=422, detail="CUDA is not available; choose CPU or auto before starting GPU training.")
         params = payload.model_dump()
         job = create_training_job(conn, project_id, payload.dataset_id, payload.name, params)
+        background_tasks.add_task(run_job_background, job["id"])
+        return job
+
+
+@app.get("/training-jobs/{job_id}")
+def get_training_job_endpoint(job_id: int) -> dict:
+    with connect() as conn:
+        try:
+            return get_training_job(conn, current_project_id(conn), job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Training job not found.")
+
+
+@app.get("/training-jobs/{job_id}/events")
+async def training_job_events(job_id: int) -> StreamingResponse:
+    async def event_stream():
+        last_payload = ""
+        while True:
+            with connect() as conn:
+                try:
+                    job = get_training_job(conn, current_project_id(conn), job_id)
+                except KeyError:
+                    yield "event: error\ndata: {\"detail\":\"Training job not found\"}\n\n"
+                    return
+            payload = json.dumps(job, ensure_ascii=False)
+            if payload != last_payload:
+                yield f"data: {payload}\n\n"
+                last_payload = payload
+            if job["status"] in {"completed", "failed", "cancelled"}:
+                return
+            await asyncio.sleep(2)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream; charset=utf-8")
+
+
+@app.get("/training-jobs/{job_id}/log")
+def get_training_job_log(job_id: int, tail: int | None = 200) -> dict:
+    with connect() as conn:
+        try:
+            return read_job_log(conn, current_project_id(conn), job_id, tail)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Training job not found.")
+
+
+@app.post("/training-jobs/{job_id}/cancel")
+def cancel_training_job_endpoint(job_id: int) -> dict:
+    with connect() as conn:
+        try:
+            return cancel_training_job(conn, current_project_id(conn), job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Training job not found.")
+
+
+@app.post("/training-jobs/{job_id}/retry")
+def retry_training_job_endpoint(job_id: int, background_tasks: BackgroundTasks) -> dict:
+    with connect() as conn:
+        try:
+            job = clone_training_job(conn, current_project_id(conn), job_id, mode="retry")
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Training job not found.")
+        background_tasks.add_task(run_job_background, job["id"])
+        return job
+
+
+@app.post("/training-jobs/{job_id}/resume")
+def resume_training_job_endpoint(job_id: int, background_tasks: BackgroundTasks) -> dict:
+    with connect() as conn:
+        try:
+            job = clone_training_job(conn, current_project_id(conn), job_id, mode="resume")
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Training job not found.")
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         background_tasks.add_task(run_job_background, job["id"])
         return job
 
@@ -1257,19 +1480,17 @@ def training_model_profile(payload: ModelProfileRequest) -> dict:
 
 
 @app.get("/training-jobs")
-def list_training_jobs() -> list[dict]:
+def list_training_jobs(status: str | None = None) -> list[dict]:
     with connect() as conn:
-        return rows_to_dicts(
-            conn.execute(
-                """
-                SELECT *
-                FROM training_jobs
-                WHERE project_id = ?
-                ORDER BY created_at DESC
-                """,
-                (current_project_id(conn),),
-            )
-        )
+        return list_training_jobs_service(conn, current_project_id(conn), status)
+
+
+@app.get("/datasets/{dataset_id}/training-summary")
+def get_dataset_training_summary(dataset_id: int) -> dict:
+    with connect() as conn:
+        project_id = current_project_id(conn)
+        require_dataset(conn, project_id, dataset_id)
+        return dataset_training_summary(conn, project_id, dataset_id)
 
 
 @app.get("/models")
@@ -1278,10 +1499,19 @@ def list_models() -> list[dict]:
         return rows_to_dicts(
             conn.execute(
                 """
-                SELECT id, name, metrics_summary, is_recommended, created_at
-                FROM models
-                WHERE project_id = ?
-                ORDER BY is_recommended DESC, created_at DESC
+                SELECT m.id,
+                       m.name,
+                       m.metrics_summary,
+                       m.internal_weight_path,
+                       m.is_recommended,
+                       m.created_at,
+                       e.id AS source_experiment_id,
+                       e.name AS source_experiment_name,
+                       e.training_job_id
+                FROM models m
+                LEFT JOIN experiments e ON e.id = m.source_experiment_id
+                WHERE m.project_id = ?
+                ORDER BY m.is_recommended DESC, m.created_at DESC
                 """,
                 (current_project_id(conn),),
             )
@@ -1300,8 +1530,8 @@ def list_experiments() -> list[dict]:
 
 
 def run_job_background(job_id: int) -> None:
-    with connect() as conn:
-        run_training_job(conn, job_id)
+    thread = threading.Thread(target=run_training_job, args=(job_id,), daemon=True)
+    thread.start()
 
 
 if __name__ == "__main__":

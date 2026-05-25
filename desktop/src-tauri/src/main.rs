@@ -38,6 +38,16 @@ fn pick_media_files(app: AppHandle) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+fn pick_model_file(app: AppHandle) -> Result<Option<String>, String> {
+    let file = app
+        .dialog()
+        .file()
+        .add_filter("Model weights", &["pt", "pth"])
+        .blocking_pick_file();
+    Ok(file.and_then(|path| path.as_path().map(|p| p.to_string_lossy().to_string())))
+}
+
+#[tauri::command]
 fn pick_media_folder(app: AppHandle) -> Result<Vec<String>, String> {
     let folder = app.dialog().file().blocking_pick_folder();
     Ok(folder
@@ -115,6 +125,7 @@ fn main() {
             backend_base_url,
             pick_media_files,
             pick_media_folder,
+            pick_model_file,
         ])
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {

@@ -138,6 +138,11 @@ def parse_coco_dataset(root: Path) -> ParsedDataset | None:
     json_paths = sorted(
         path for path in root.rglob("*.json") if path.is_file() and path.stat().st_size > 0
     )
+    # Pre-scan disk once: map filename -> full path
+    disk_index: dict[str, Path] = {}
+    for p in root.rglob("*"):
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS:
+            disk_index[p.name] = p
     for json_path in json_paths:
         try:
             data = json.loads(json_path.read_text(encoding="utf-8"))
@@ -146,20 +151,21 @@ def parse_coco_dataset(root: Path) -> ParsedDataset | None:
         if not all(key in data for key in ("images", "annotations", "categories")):
             continue
         category_by_id = {int(item["id"]): str(item.get("name") or item["id"]) for item in data["categories"]}
-        annotations_by_image: dict[int, list[dict[str, Any]]] = {}
+        annotations_by_image: dict[str, list[dict[str, Any]]] = {}
         for ann in data["annotations"]:
             if "bbox" not in ann:
                 continue
-            annotations_by_image.setdefault(int(ann["image_id"]), []).append(ann)
+            annotations_by_image.setdefault(str(ann["image_id"]), []).append(ann)
         samples = []
         for image in data["images"]:
-            image_path = resolve_coco_image(root, json_path.parent, str(image.get("file_name") or ""))
+            file_name = str(image.get("file_name") or "")
+            image_path = disk_index.get(Path(file_name).name) if file_name else None
             if image_path is None:
                 continue
             width = int(image.get("width") or image_size(image_path)[0])
             height = int(image.get("height") or image_size(image_path)[1])
             boxes = []
-            for ann in annotations_by_image.get(int(image["id"]), []):
+            for ann in annotations_by_image.get(str(image["id"]), []):
                 box = coco_bbox_to_normalized(ann["bbox"], width, height)
                 if box is None:
                     continue

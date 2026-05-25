@@ -52,7 +52,7 @@ export type PublicDataset = {
 
 export type DatasetJob = {
   id: number;
-  job_type: "public_download" | "public_import" | "folder_import";
+  job_type: "public_download" | "public_import" | "folder_import" | "fusion_build";
   status: "queued" | "running" | "completed" | "failed";
   stage: string;
   percent: number;
@@ -65,6 +65,16 @@ export type DatasetJob = {
   params: string;
   created_at: string;
   updated_at: string;
+};
+
+export type StorageSettings = {
+  app_root: string;
+  data_root: string;
+  db_path: string;
+  media_dir: string;
+  public_data_dir: string;
+  runtime_dir: string;
+  log_dir: string;
 };
 
 export type AnnotationPayload = {
@@ -103,6 +113,45 @@ export type TrainingJob = {
   runtime_dataset_path?: string | null;
   log_path?: string | null;
   output_model_id?: number | null;
+  params_json?: Record<string, unknown>;
+  run_dir?: string | null;
+  results_csv_path?: string | null;
+  metrics?: Record<string, number | string>;
+  raw_metrics?: Record<string, number | string>;
+  current_epoch?: number | null;
+  total_epochs?: number;
+  progress?: number;
+  stage?: string;
+  error_summary?: string | null;
+  artifact_refs?: {
+    run_dir?: string;
+    best_pt?: string;
+    last_pt?: string;
+    results_csv?: string;
+    best_exists?: boolean;
+    last_exists?: boolean;
+    results_exists?: boolean;
+  };
+};
+
+export type TrainingLog = {
+  job_id: number;
+  log_path: string;
+  text: string;
+  line_count: number;
+};
+
+export type DatasetTrainingSummary = {
+  dataset_id: number;
+  image_count: number;
+  annotation_count: number;
+  class_count: number;
+  splits: Record<"train" | "val" | "test" | "unassigned", number>;
+  empty_label_images: number;
+  missing_val: boolean;
+  ready: boolean;
+  blockers: string[];
+  warnings: string[];
 };
 
 export type DeviceStatus = {
@@ -138,6 +187,11 @@ export type ModelProfile = {
   name: string;
   source: string;
   model_type: string;
+  task?: string;
+  stride?: number | null;
+  weight_file_size?: number | null;
+  best_exists?: boolean;
+  last_exists?: boolean;
   layer_count: number | null;
   parameters: number | null;
   trainable_parameters: number | null;
@@ -153,6 +207,7 @@ export type DatasetMediaItem = {
   width: number | null;
   height: number | null;
   annotation_count: number;
+  annotation_status: "annotated" | "unannotated";
   class_names: string[];
 };
 
@@ -173,6 +228,10 @@ export type ModelItem = {
   id: number;
   name: string;
   metrics_summary: string;
+  internal_weight_path?: string | null;
+  source_experiment_id?: number | null;
+  source_experiment_name?: string | null;
+  training_job_id?: number | null;
   is_recommended: number;
   created_at: string;
 };
