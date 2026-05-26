@@ -59,9 +59,13 @@ class DatasetMediaAdd(BaseModel):
 
 
 class ClassCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.-]+$")
-    display_name: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=120)
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
     color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+
+
+class ClassUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
 
 
 class PublicDatasetJobRequest(BaseModel):
@@ -146,7 +150,7 @@ class AssistedAnnotationSettingsUpdate(BaseModel):
     enabled: bool = False
     model_path: str | None = Field(default=None, max_length=500)
     confidence: float = Field(default=0.25, ge=0.01, le=0.99)
-    preload_radius: int = Field(default=3, ge=0, le=20)
+    preload_radius: Literal[16, 32, 64] = 16
     image_size: int = Field(default=640, ge=128, le=2048)
     device: str = Field(default="auto", max_length=40)
 
@@ -157,4 +161,4 @@ class AssistedAnnotationStart(BaseModel):
 
 class AssistedAnnotationPredictRequest(BaseModel):
     dataset_id: int
-    media_asset_ids: list[int] = Field(min_length=1, max_length=41)
+    media_asset_ids: list[int] = Field(min_length=1, max_length=64)

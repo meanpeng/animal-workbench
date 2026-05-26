@@ -30,7 +30,7 @@ def _class_name_key(value: str) -> str:
 
 
 def _ensure_dataset_class(conn, project_id: int, dataset_id: int, display_name: str) -> int:
-    name = _class_name_key(display_name)
+    name = display_name.strip()
     existing = conn.execute(
         "SELECT * FROM classes WHERE project_id = ? AND name = ?",
         (project_id, name),

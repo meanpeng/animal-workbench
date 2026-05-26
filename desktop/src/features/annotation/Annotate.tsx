@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { api } from "../../api";
 import type { AssistedAnnotationPrediction, AssistedAnnotationSettings, Dataset, DatasetDetail, Summary } from "../../types";
 import { cloneBox, makeLocalId, mapAnnotationBox } from "./annotationBoxUtils";
@@ -14,6 +15,20 @@ import { useResizableCanvas } from "./hooks/useResizableCanvas";
 import { clampBox, imageLayout, normalizePoint, pixelsToBox, pointInsideImage, resizeDraftBox } from "./imageGeometry";
 
 const MEDIA_PAGE_SIZE = 100;
+const ASSISTED_BATCH_SIZES = [16, 32, 64] as const;
+const ASSISTED_BATCH_PREFETCH_THRESHOLD = 5;
+const SIDEBAR_WIDTH_STORAGE_KEY = "annotate_sidebar_width";
+const DEFAULT_SIDEBAR_WIDTH = 300;
+const MIN_SIDEBAR_WIDTH = 220;
+const MAX_SIDEBAR_WIDTH = 520;
+
+function assistedBatchSize(value: number | undefined) {
+  return ASSISTED_BATCH_SIZES.includes(value as (typeof ASSISTED_BATCH_SIZES)[number]) ? Number(value) : 16;
+}
+
+function clampSidebarWidth(value: number) {
+  return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, Math.round(value)));
+}
 
 function cleanPredictionClassName(value: string) {
   return value.trim() || "未命名类别";
@@ -57,6 +72,7 @@ export function Annotate({
   const draftBoxRef = useRef<AnnotationBox | null>(null);
   const draftAnchorRef = useRef<{ x: number; y: number } | null>(null);
   const draftFrameRef = useRef<number | null>(null);
+  const pendingDrawRef = useRef(false);
   const pendingDraftPointRef = useRef<{ x: number; y: number } | null>(null);
   const [deletedIds, setDeletedIds] = useState<number[]>([]);
   const [selectedBoxKey, setSelectedBoxKey] = useState<string | null>(null);
@@ -73,6 +89,10 @@ export function Annotate({
   const [draftMediaIds, setDraftMediaIds] = useState<Set<number>>(new Set());
   const [predictedMediaIds, setPredictedMediaIds] = useState<Set<number>>(new Set());
   const [predictionEmptyMediaIds, setPredictionEmptyMediaIds] = useState<Set<number>>(new Set());
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY));
+    return Number.isFinite(saved) && saved > 0 ? clampSidebarWidth(saved) : DEFAULT_SIDEBAR_WIDTH;
+  });
   const [loadedAnnotationMediaId, setLoadedAnnotationMediaId] = useState<number | null>(null);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [unsavedModalOpen, setUnsavedModalOpen] = useState(false);
@@ -109,6 +129,7 @@ export function Annotate({
   const imageItemsRef = useRef(imageItems);
   imageItemsRef.current = imageItems;
   const predictionInFlightRef = useRef<Set<number>>(new Set());
+  const assistedBatchEndIndexRef = useRef<number | null>(null);
 
   const provisionalClassId = useCallback((className: string) => {
     const key = cleanPredictionClassName(className).toLowerCase();
@@ -145,6 +166,7 @@ export function Annotate({
   useEffect(() => {
     assistedPredictedMediaIdsRef.current.clear();
     predictionInFlightRef.current.clear();
+    assistedBatchEndIndexRef.current = null;
     setPredictionFailedMediaIds(new Set());
     setPredictionEmptyMediaIds(new Set());
     setAssistedActive(false);
@@ -179,6 +201,7 @@ export function Annotate({
     return () => {
       cancelled = true;
       assistedPredictedMediaIdsRef.current.clear();
+      assistedBatchEndIndexRef.current = null;
       setAssistedLoading(false);
       setAssistedActive(false);
       void api.stopAssistedAnnotation();
@@ -214,6 +237,7 @@ export function Annotate({
     draftBoxRef.current = null;
     draftAnchorRef.current = null;
     pendingDraftPointRef.current = null;
+    pendingDrawRef.current = false;
     setDraftBox(null);
   };
 
@@ -254,6 +278,9 @@ export function Annotate({
     setSelectedBoxKey(null);
     setHistory([]);
     setFuture([]);
+    assistedBatchEndIndexRef.current = null;
+    assistedPredictedMediaIdsRef.current.clear();
+    predictionInFlightRef.current.clear();
     if (datasetChanged) {
       draftsRef.current.clear();
       setDraftMediaIds(new Set());
@@ -487,36 +514,63 @@ export function Annotate({
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
 
+  const startSidebarResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const nextWidth = clampSidebarWidth(startWidth + moveEvent.clientX - startX);
+      setSidebarWidth(nextWidth);
+      localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(nextWidth));
+    };
+
+    const handlePointerUp = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      document.body.classList.remove("resizing-annotation-sidebar");
+    };
+
+    document.body.classList.add("resizing-annotation-sidebar");
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  }, [sidebarWidth]);
+
+  const resetSidebarWidth = useCallback(() => {
+    setSidebarWidth(DEFAULT_SIDEBAR_WIDTH);
+    localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(DEFAULT_SIDEBAR_WIDTH));
+  }, []);
+
   useEffect(() => {
     if (!assistedActive || !assistedSettings || !selectedDatasetId || !selected) return;
     const currentItems = imageItemsRef.current;
     const selectedIndex = currentItems.findIndex((item) => item.id === selected.id);
     if (selectedIndex === -1) return;
-    const radius = Math.max(0, Math.min(20, assistedSettings.preload_radius));
-    const start = Math.max(0, selectedIndex - radius);
-    const end = Math.min(currentItems.length, selectedIndex + radius + 1);
+    if (loadedAnnotationMediaId !== selected.id) return;
 
-    const freshItems = currentItems
-      .slice(start, end)
-      .filter((item) => item.annotation_count === 0)
-      .filter((item) => !draftsRef.current.has(item.id))
-      .filter((item) => !assistedPredictedMediaIdsRef.current.has(item.id))
-      .filter((item) => !predictionInFlightRef.current.has(item.id));
-
-    const selectedReady = loadedAnnotationMediaId === selected.id;
-    const selectedFresh = freshItems.find((item) => item.id === selected.id);
-
-    const surroundingIds = freshItems
-      .filter((item) => item.id !== selected.id)
-      .map((item) => item.id);
-
-    const candidates: number[] = [];
-    if (selectedFresh && selectedReady) {
-      candidates.push(selected.id);
+    const batchSize = assistedBatchSize(assistedSettings.preload_radius);
+    const currentBatchEndIndex = assistedBatchEndIndexRef.current;
+    let startIndex: number | null = null;
+    if (currentBatchEndIndex === null || selectedIndex > currentBatchEndIndex) {
+      startIndex = selectedIndex;
+    } else if (selectedIndex >= currentBatchEndIndex - ASSISTED_BATCH_PREFETCH_THRESHOLD) {
+      startIndex = currentBatchEndIndex + 1;
     }
-    for (const id of surroundingIds) {
-      candidates.push(id);
+    if (startIndex === null || startIndex >= currentItems.length) return;
+
+    const candidateItems: { item: DatasetDetail["media"][number]; index: number }[] = [];
+    for (let index = startIndex; index < currentItems.length && candidateItems.length < batchSize; index += 1) {
+      const item = currentItems[index];
+      if (item.annotation_count > 0) continue;
+      if (draftsRef.current.has(item.id)) continue;
+      if (assistedPredictedMediaIdsRef.current.has(item.id)) continue;
+      if (predictionInFlightRef.current.has(item.id)) continue;
+      candidateItems.push({ item, index });
     }
+
+    if (candidateItems.length === 0) return;
+    assistedBatchEndIndexRef.current = candidateItems[candidateItems.length - 1].index;
+    const candidates = candidateItems.map(({ item }) => item.id);
     if (candidates.length === 0) return;
 
     for (const id of candidates) {
@@ -727,8 +781,10 @@ export function Annotate({
     const canStart = event.target === stage || targetName === "canvas-bg" || targetName === "image";
     if (!canStart) return;
     const position = stage.getPointerPosition();
-    if (!position || !pointInsideImage(position, layout)) {
-      setSelectedBoxKey(null);
+    if (!position) return;
+    setSelectedBoxKey(null);
+    if (!pointInsideImage(position, layout)) {
+      pendingDrawRef.current = true;
       return;
     }
     const normalized = normalizePoint(position, layout);
@@ -744,15 +800,33 @@ export function Annotate({
     draftBoxRef.current = nextDraft;
     draftAnchorRef.current = normalized;
     pendingDraftPointRef.current = null;
-    setSelectedBoxKey(null);
     setDraftBox(nextDraft);
   };
-
   const updateDraw = (event: any) => {
+    const stage = event.target.getStage();
+    const position = stage.getPointerPosition();
+    if (!position) return;
+    // Handle pending draw started outside the image
+    if (pendingDrawRef.current && !draftBoxRef.current) {
+      if (!pointInsideImage(position, layout)) return;
+      // Entered the image — create draft at boundary
+      const normalized = normalizePoint(position, layout);
+      const nextDraft: AnnotationBox = {
+        local_id: makeLocalId(),
+        class_id: activeClassId,
+        x: normalized.x,
+        y: normalized.y,
+        width: 0.001,
+        height: 0.001,
+        review_status: "draft",
+      };
+      draftBoxRef.current = nextDraft;
+      draftAnchorRef.current = normalized;
+      setDraftBox(nextDraft);
+      return;
+    }
     const currentDraft = draftBoxRef.current;
     if (!currentDraft) return;
-    const position = event.target.getStage().getPointerPosition();
-    if (!position) return;
     pendingDraftPointRef.current = position;
     if (draftFrameRef.current !== null) return;
     draftFrameRef.current = window.requestAnimationFrame(() => {
@@ -766,8 +840,12 @@ export function Annotate({
       setDraftBox(nextDraft);
     });
   };
-
   const finishDraw = () => {
+    // Clean up pending draw that never entered the image
+    if (pendingDrawRef.current && !draftBoxRef.current) {
+      pendingDrawRef.current = false;
+      return;
+    }
     let finalDraft = draftBoxRef.current;
     if (!finalDraft) return;
     if (draftFrameRef.current !== null) {
@@ -781,18 +859,18 @@ export function Annotate({
     draftBoxRef.current = null;
     draftAnchorRef.current = null;
     pendingDraftPointRef.current = null;
+    pendingDrawRef.current = false;
     if (finalDraft.width < 0.005 || finalDraft.height < 0.005) {
       setDraftBox(null);
-      setMessage("\u6846\u592a\u5c0f\uff0c\u5df2\u5ffd\u7565\u3002");
+      setMessage("框太小，已忽略。");
       return;
     }
     commitHistory();
     setBoxes((current) => [...current, finalDraft]);
     setSelectedBoxKey(finalDraft.local_id);
     setDraftBox(null);
-    setMessage("\u65b0\u6846\u5df2\u52a0\u5165\uff0c\u70b9\u51fb\u4fdd\u5b58\u5199\u5165\u6570\u636e\u5e93\u3002");
+    setMessage("新框已加入，点击保存写入数据库。");
   };
-
   const updateBox = (localId: string, patch: Partial<AnnotationBox>) => {
     setBoxes((current) =>
       current.map((box) => (box.local_id === localId ? clampBox({ ...box, ...patch, dirty: Boolean(box.id) || box.dirty }) : box)),
@@ -820,12 +898,34 @@ export function Annotate({
     setMessage("\u5df2\u66f4\u65b0\u6240\u9009\u6807\u6ce8\u7c7b\u522b\u3002");
   };
 
+  const applySingleBoxClass = (classId: number) => {
+    if (displayedBoxes.length !== 1) return false;
+    const onlyBox = displayedBoxes[0];
+    setActiveClassId(classId);
+    setSelectedBoxKey(onlyBox.local_id);
+    if (onlyBox.class_id === classId) {
+      setMessage("\u5df2\u9009\u4e2d\u5f53\u524d\u552f\u4e00\u6807\u6ce8\u6846\u3002");
+      return true;
+    }
+    commitHistory();
+    if (draftBox && onlyBox.local_id === draftBox.local_id) {
+      const nextDraft = { ...draftBox, class_id: classId };
+      draftBoxRef.current = nextDraft;
+      setDraftBox(nextDraft);
+    } else {
+      updateBox(onlyBox.local_id, { class_id: classId });
+    }
+    setMessage("\u5df2\u5c06\u5f53\u524d\u552f\u4e00\u6807\u6ce8\u6846\u66f4\u6539\u4e3a\u9009\u5b9a\u7c7b\u522b\u3002");
+    return true;
+  };
+
   useAnnotationShortcuts({
     classes: orderedDatasetClasses,
     imageItems,
     selectedId,
     selectedBoxKey,
     onChangeClass: changeClass,
+    onDoubleClassShortcut: applySingleBoxClass,
     onUndo: undo,
     onRedo: redo,
     onDeleteSelected: deleteSelected,
@@ -879,12 +979,7 @@ export function Annotate({
     setAddingClass(true);
     setAddClassError("");
     try {
-      let name = newClassDisplayName.trim().toLowerCase().replace(/\s+/g, "_");
-      name = name.replace(/[^a-z0-9_.-]+/g, "_").replace(/^_|_$/g, "").replace(/_{2,}/g, "_");
-      if (!name || !/^[A-Za-z0-9_.-]+$/.test(name)) {
-        name = "class_" + Date.now();
-      }
-      const created = await api.createDatasetClass(selectedDatasetId, { name, display_name: newClassDisplayName.trim() });
+      const created = await api.createDatasetClass(selectedDatasetId, { name: newClassDisplayName.trim() });
       const nextClasses = await api.datasetClasses(selectedDatasetId);
       setDatasetClasses(nextClasses);
       setActiveClassId(created.id);
@@ -919,19 +1014,25 @@ export function Annotate({
 
   const handleTransformEnd = (box: AnnotationBox, event: any) => {
     const node = event.target;
+    const scaleX = node.scaleX();
+    const scaleY = node.scaleY();
+    const scaledW = Math.abs(node.width() * scaleX);
+    const scaledH = Math.abs(node.height() * scaleY);
+    // Use axis-aligned bounding box to handle flipped scales correctly
+    const boxX = scaleX >= 0 ? node.x() : node.x() + node.width() * scaleX;
+    const boxY = scaleY >= 0 ? node.y() : node.y() + node.height() * scaleY;
     const next = pixelsToBox(
-      node.x(),
-      node.y(),
-      Math.max(node.width() * node.scaleX(), 4),
-      Math.max(node.height() * node.scaleY(), 4),
+      boxX,
+      boxY,
+      Math.max(scaledW, 4),
+      Math.max(scaledH, 4),
       layout,
     );
     node.scaleX(1);
     node.scaleY(1);
     updateBox(box.local_id, next);
-    setMessage("\u6807\u6ce8\u6846\u5c3a\u5bf8\u5df2\u66f4\u65b0\u3002");
+    setMessage("标注框尺寸已更新。");
   };
-
   const refreshDatasetClasses = useCallback(async () => {
     if (!selectedDatasetId) return;
     const nextClasses = await api.datasetClasses(selectedDatasetId);
@@ -965,9 +1066,16 @@ export function Annotate({
   const selectedDataset = datasets.find((d) => d.id === selectedDatasetId);
   const totalAnnotated = currentDatasetStats?.annotated_media ?? datasetMedia.filter((m) => m.annotation_count > 0).length;
   const canvasMessage = assistedLoading ? "正在加载辅助标注模型..." : message;
+  const draftBoxCounts = new Map<number, number>();
+  for (const [mediaId, draft] of draftsRef.current.entries()) {
+    draftBoxCounts.set(mediaId, draft.boxes.length);
+  }
+  if (selected && hasUnsavedChanges) {
+    draftBoxCounts.set(selected.id, boxes.length + (draftBox ? 1 : 0));
+  }
 
   return (
-    <section className="annotation-layout">
+    <section className="annotation-layout" style={{ gridTemplateColumns: `${sidebarWidth}px 8px minmax(0, 1fr)` }}>
       <AnnotationSidebar
         selectedDatasetId={selectedDatasetId}
         selectedDatasetName={selectedDataset?.name}
@@ -984,6 +1092,7 @@ export function Annotate({
         imageItems={imageItems}
         selectedMediaId={selected?.id}
         draftMediaIds={draftMediaIds}
+        draftBoxCounts={draftBoxCounts}
         predictedMediaIds={predictedMediaIds}
         predictionEmptyMediaIds={predictionEmptyMediaIds}
         predictionFailedMediaIds={predictionFailedMediaIds}
@@ -996,12 +1105,23 @@ export function Annotate({
         onBack={handleDatasetBack}
       />
 
+      <div
+        className="annotation-sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整图片列表宽度"
+        title="拖动调整图片列表宽度，双击恢复默认"
+        onPointerDown={startSidebarResize}
+        onDoubleClick={resetSidebarWidth}
+      />
+
       <div className="annotator">
         <AnnotationCanvas
           datasetClasses={orderedDatasetClasses}
           selectedBox={selectedBox}
           activeClassId={activeClassId}
           onChangeClass={changeClass}
+          onApplySingleBoxClass={applySingleBoxClass}
           onOpenAddClass={() => {
             setNewClassDisplayName("");
             setAddClassError("");

@@ -1,4 +1,4 @@
-import { Fragment, useMemo } from "react";
+import { Fragment, useCallback, useMemo, useRef } from "react";
 import type React from "react";
 import { CheckCircle2, Plus, RotateCcw, RotateCw, Trash2 } from "lucide-react";
 import { Image as KonvaImage, Label as KonvaLabel, Layer, Rect, Stage, Tag as KonvaTag, Text, Transformer } from "react-konva";
@@ -7,11 +7,14 @@ import type { AnnotationBox } from "../annotationTypes";
 import type { ImageLayout } from "../imageGeometry";
 import { predictedClassColor, readableTextColor, shortcutLabel } from "../uiUtils";
 
+const BOX_FILL_OPACITY = "1A";
+
 type AnnotationCanvasProps = {
   datasetClasses: Summary["classes"];
   selectedBox: AnnotationBox | undefined;
   activeClassId: number;
   onChangeClass: (classId: number) => void;
+  onApplySingleBoxClass: (classId: number) => void;
   onOpenAddClass: () => void;
   stageContainerRef: React.RefObject<HTMLDivElement>;
   stageRef: React.RefObject<any>;
@@ -46,6 +49,7 @@ export function AnnotationCanvas({
   selectedBox,
   activeClassId,
   onChangeClass,
+  onApplySingleBoxClass,
   onOpenAddClass,
   stageContainerRef,
   stageRef,
@@ -75,6 +79,35 @@ export function AnnotationCanvas({
   onSave,
 }: AnnotationCanvasProps) {
   const classById = useMemo(() => new Map(datasetClasses.map((item) => [item.id, item])), [datasetClasses]);
+  const hasSingleBox = displayedBoxes.length === 1;
+
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+
+  const imageBounds = useCallback((_oldBox: { x: number; y: number; width: number; height: number; rotation?: number }, newBox: { x: number; y: number; width: number; height: number; rotation?: number }) => {
+    const { x: imgLeft, y: imgTop, width: imgW, height: imgH } = layoutRef.current;
+    const imgRight = imgLeft + imgW;
+    const imgBottom = imgTop + imgH;
+    const minSize = 4;
+    let { x, y, width, height } = newBox;
+    if (x < imgLeft) {
+      width -= imgLeft - x;
+      x = imgLeft;
+    }
+    if (x + width > imgRight) {
+      width = imgRight - x;
+    }
+    if (y < imgTop) {
+      height -= imgTop - y;
+      y = imgTop;
+    }
+    if (y + height > imgBottom) {
+      height = imgBottom - y;
+    }
+    if (width < minSize) width = minSize;
+    if (height < minSize) height = minSize;
+    return { x, y, width, height, rotation: newBox.rotation ?? 0 };
+  }, []);
 
   return (
     <>
@@ -83,6 +116,8 @@ export function AnnotationCanvas({
           const isActive = item.id === (selectedBox?.class_id ?? activeClassId);
           const color = item.color ?? "#2979ff";
           const shortcut = shortcutLabel(index);
+          const shortcutTitle = shortcut ? ` (${shortcut})` : "";
+          const singleBoxHint = hasSingleBox ? "；仅有一个标注框时，双击标签或双按快捷键可直接修改它的类别" : "";
           return (
             <button
               key={item.id}
@@ -95,7 +130,8 @@ export function AnnotationCanvas({
                 "--tag-bg-hover": color + "22",
               } as React.CSSProperties}
               onClick={() => onChangeClass(item.id)}
-              title={shortcut ? `${item.display_name} (${shortcut})` : item.display_name}
+              onDoubleClick={() => onApplySingleBoxClass(item.id)}
+              title={`${item.display_name}${shortcutTitle}${singleBoxHint}`}
             >
               {shortcut ? <span className="class-tag-num">{shortcut}</span> : null}
               {item.display_name}
@@ -141,15 +177,28 @@ export function AnnotationCanvas({
                   <Rect
                     id={`box-${box.local_id}`}
                     name="annotation-box"
+                    onMouseEnter={(event) => {
+                      const stage = event.target.getStage();
+                      if (stage) stage.container().style.cursor = "pointer";
+                    }}
+                    onMouseLeave={(event) => {
+                      const stage = event.target.getStage();
+                      if (stage) stage.container().style.cursor = "default";
+                    }}
                     x={px}
                     y={py}
                     width={pw}
                     height={box.height * layout.height}
                     stroke={color}
+                    fill={`${color}${BOX_FILL_OPACITY}`}
                     strokeWidth={box.local_id === selectedBoxKey ? 4 : 3}
                     perfectDrawEnabled={false}
                     shadowForStrokeEnabled={false}
                     draggable={!draftBox}
+                    dragBoundFunc={draftBox ? undefined : (pos: { x: number; y: number }) => ({
+                      x: Math.max(layout.x, Math.min(pos.x, layout.x + layout.width - pw)),
+                      y: Math.max(layout.y, Math.min(pos.y, layout.y + layout.height - box.height * layout.height)),
+                    })}
                     dash={box.id ? undefined : [4, 3]}
                     onMouseDown={(event) => {
                       event.cancelBubble = true;
@@ -172,6 +221,7 @@ export function AnnotationCanvas({
             <Transformer
               ref={transformerRef}
               rotateEnabled={false}
+              boundBoxFunc={imageBounds}
               enabledAnchors={[
                 "top-left",
                 "top-center",

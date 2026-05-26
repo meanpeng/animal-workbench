@@ -7,6 +7,7 @@ type UseAnnotationShortcutsArgs = {
   selectedId: number | null;
   selectedBoxKey: string | null;
   onChangeClass: (classId: number) => void;
+  onDoubleClassShortcut: (classId: number) => boolean;
   onUndo: () => void;
   onRedo: () => void;
   onDeleteSelected: () => void;
@@ -19,6 +20,7 @@ export function useAnnotationShortcuts({
   selectedId,
   selectedBoxKey,
   onChangeClass,
+  onDoubleClassShortcut,
   onUndo,
   onRedo,
   onDeleteSelected,
@@ -29,6 +31,8 @@ export function useAnnotationShortcuts({
   const selectedIdRef = useRef(selectedId);
   const selectedBoxKeyRef = useRef(selectedBoxKey);
   const changeClassRef = useRef(onChangeClass);
+  const doubleClassShortcutRef = useRef(onDoubleClassShortcut);
+  const lastClassShortcutRef = useRef<{ classId: number; time: number } | null>(null);
   const undoRef = useRef(onUndo);
   const redoRef = useRef(onRedo);
   const deleteSelectedRef = useRef(onDeleteSelected);
@@ -39,6 +43,7 @@ export function useAnnotationShortcuts({
   selectedIdRef.current = selectedId;
   selectedBoxKeyRef.current = selectedBoxKey;
   changeClassRef.current = onChangeClass;
+  doubleClassShortcutRef.current = onDoubleClassShortcut;
   undoRef.current = onUndo;
   redoRef.current = onRedo;
   deleteSelectedRef.current = onDeleteSelected;
@@ -52,13 +57,21 @@ export function useAnnotationShortcuts({
       let classIndex = -1;
       if (key >= "1" && key <= "9") classIndex = key.charCodeAt(0) - 49;
       else if (key === "0") classIndex = 9;
-      else if (key >= "a" && key <= "z") classIndex = key.charCodeAt(0) - 87;
+      else if (key >= "a" && key <= "z" && !event.ctrlKey && !event.metaKey && !event.altKey) classIndex = key.charCodeAt(0) - 87;
 
       const currentClasses = classesRef.current;
       if (classIndex >= 0 && classIndex < currentClasses.length) {
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
         event.preventDefault();
-        changeClassRef.current(currentClasses[classIndex].id);
+        const classId = currentClasses[classIndex].id;
+        const now = window.performance.now();
+        const last = lastClassShortcutRef.current;
+        lastClassShortcutRef.current = { classId, time: now };
+        if (!event.repeat && last?.classId === classId && now - last.time <= 450 && doubleClassShortcutRef.current(classId)) {
+          lastClassShortcutRef.current = null;
+          return;
+        }
+        changeClassRef.current(classId);
         return;
       }
 

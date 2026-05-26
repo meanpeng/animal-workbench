@@ -8,6 +8,7 @@ import type {
   DatasetJob,
   Dataset,
   DatasetDetail,
+  DatasetClassDeletePreview,
   DeviceStatus,
   DatasetTrainingSummary,
   Experiment,
@@ -232,9 +233,21 @@ export const api = {
       },
     ),
   datasetClasses: (datasetId: number) => request<Summary["classes"]>(`/datasets/${datasetId}/classes`),
-  createDatasetClass: (datasetId: number, payload: { name: string; display_name: string; color?: string }) =>
+  createDatasetClass: (datasetId: number, payload: { name: string; color?: string }) =>
     request<{ id: number }>(`/datasets/${datasetId}/classes`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  updateDatasetClass: (datasetId: number, classId: number, payload: { name: string }) =>
+    request<Summary["classes"][number]>(`/datasets/${datasetId}/classes/${classId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  previewDeleteDatasetClass: (datasetId: number, classId: number) =>
+    request<DatasetClassDeletePreview>(`/datasets/${datasetId}/classes/${classId}/delete-preview`),
+  deleteDatasetClass: (datasetId: number, classId: number) =>
+    request<{ deleted_class_id: number; deleted_annotations: number; affected_media_count: number }>(
+      `/datasets/${datasetId}/classes/${classId}`,
+      { method: "DELETE" },
+    ),
 };

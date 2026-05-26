@@ -34,6 +34,12 @@ import { formatBeijingTime } from "./utils";
 
 type View = "dashboard" | "datasets" | "annotate" | "training" | "results";
 
+const assistedBatchSizes = [16, 32, 64] as const;
+
+function normalizeAssistedBatchSize(value: number | undefined) {
+  return assistedBatchSizes.includes(value as (typeof assistedBatchSizes)[number]) ? Number(value) : 16;
+}
+
 const navItems: Array<{ view: View; label: string; icon: LucideIcon }> = [
   { view: "dashboard", label: "首页", icon: LayoutDashboard },
   { view: "datasets", label: "数据集", icon: Database },
@@ -186,7 +192,7 @@ function GlobalSettingsModal({
     enabled: false,
     model_path: "",
     confidence: 0.25,
-    preload_radius: 3,
+    preload_radius: 16,
     image_size: 640,
     device: "auto",
   });
@@ -199,7 +205,7 @@ function GlobalSettingsModal({
       .then(([nextStorage, nextAssist]) => {
         setSettings(nextStorage);
         setDataRoot(nextStorage.data_root);
-        setAssistSettings(nextAssist);
+        setAssistSettings({ ...nextAssist, preload_radius: normalizeAssistedBatchSize(nextAssist.preload_radius) });
       })
       .catch((error) => setMessage(error instanceof Error ? error.message : "读取设置失败"));
   }, []);
@@ -226,7 +232,7 @@ function GlobalSettingsModal({
           ...assistSettings,
           model_path: assistSettings.model_path.trim(),
           confidence: Number(assistSettings.confidence),
-          preload_radius: Number(assistSettings.preload_radius),
+          preload_radius: normalizeAssistedBatchSize(assistSettings.preload_radius),
           image_size: Number(assistSettings.image_size),
           device: assistSettings.device.trim() || "auto",
         }),
@@ -308,15 +314,15 @@ function GlobalSettingsModal({
               />
             </label>
             <label className="storage-field">
-              <span>前后预标注张数</span>
-              <input
-                type="number"
-                min="0"
-                max="20"
-                step="1"
-                value={assistSettings.preload_radius}
+              <span>预标注批次大小</span>
+              <select
+                value={normalizeAssistedBatchSize(assistSettings.preload_radius)}
                 onChange={(event) => setAssistSettings((current) => ({ ...current, preload_radius: Number(event.target.value) }))}
-              />
+              >
+                {assistedBatchSizes.map((size) => (
+                  <option key={size} value={size}>{size} 张</option>
+                ))}
+              </select>
             </label>
             <label className="storage-field">
               <span>推理尺寸</span>

@@ -7,7 +7,10 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from animal_workbench.config import get_paths
+from animal_workbench.db import connect
 from animal_workbench.main import app
+from animal_workbench.repository import current_project_id
+from animal_workbench.services.training import create_training_job, export_yolo_dataset
 
 
 def _dataset_with_class(client: TestClient, media_id: int) -> tuple[int, int]:
@@ -17,7 +20,7 @@ def _dataset_with_class(client: TestClient, media_id: int) -> tuple[int, int]:
     ).json()
     created_class = client.post(
         f"/datasets/{dataset['id']}/classes",
-        json={"name": f"animal_{media_id}", "display_name": f"Animal {media_id}"},
+        json={"name": f"动物_{media_id}"},
     ).json()
     return dataset["id"], created_class["id"]
 
@@ -163,12 +166,162 @@ def test_create_dataset_class_and_reject_duplicate(tmp_path, monkeypatch):
     monkeypatch.setenv("ANIMAL_WORKBENCH_HOME", str(tmp_path / "app-home"))
     with TestClient(app) as client:
         dataset = client.post("/datasets", json={"name": "labels", "dataset_type": "user", "media_asset_ids": []}).json()
-        created = client.post(f"/datasets/{dataset['id']}/classes", json={"name": "red_fox", "display_name": "red fox"})
+        created = client.post(f"/datasets/{dataset['id']}/classes", json={"name": "赤狐"})
         assert created.status_code == 200
-        assert created.json()["display_name"] == "red fox"
+        assert created.json()["name"] == "赤狐"
+        assert created.json()["display_name"] == "赤狐"
 
-        duplicate = client.post(f"/datasets/{dataset['id']}/classes", json={"name": "red_fox", "display_name": "red fox 2"})
+        duplicate = client.post(f"/datasets/{dataset['id']}/classes", json={"name": "赤狐"})
         assert duplicate.status_code == 409
+
+        updated = client.put(f"/datasets/{dataset['id']}/classes/{created.json()['id']}", json={"name": "狐狸"})
+        assert updated.status_code == 200
+        assert updated.json()["name"] == "狐狸"
+        assert updated.json()["display_name"] == "狐狸"
+
+
+def test_training_export_uses_class_name_with_chinese_labels(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANIMAL_WORKBENCH_HOME", str(tmp_path / "app-home"))
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    image_path = source_dir / "camera one.jpg"
+    Image.new("RGB", (80, 60), color=(20, 80, 120)).save(image_path)
+
+    with TestClient(app) as client:
+        imported = client.post("/media/import", json={"paths": [str(image_path)]}).json()
+        media_id = imported["imported"][0]["id"]
+        dataset = client.post(
+            "/datasets",
+            json={"name": "training-labels", "dataset_type": "user", "media_asset_ids": [media_id]},
+        ).json()
+        created_class = client.post(f"/datasets/{dataset['id']}/classes", json={"name": "猞猁"}).json()
+        client.post(
+            "/annotations",
+            json={
+                "dataset_id": dataset["id"],
+                "media_asset_id": media_id,
+                "class_id": created_class["id"],
+                "x": 0.1,
+                "y": 0.2,
+                "width": 0.3,
+                "height": 0.4,
+                "review_status": "confirmed",
+            },
+        )
+
+        with connect() as conn:
+            project_id = current_project_id(conn)
+            job = create_training_job(
+                conn,
+                project_id,
+                int(dataset["id"]),
+                "export-labels",
+                {"run_yolo": False, "epochs": 1, "image_size": 640, "batch_size": 1, "device": "cpu"},
+            )
+            yaml_path = export_yolo_dataset(conn, int(job["id"]))
+
+        assert '0: "猞猁"' in yaml_path.read_text(encoding="utf-8")
+
+
+def test_delete_dataset_class_removes_annotations_and_unlabels_media(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANIMAL_WORKBENCH_HOME", str(tmp_path / "app-home"))
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    image_path = source_dir / "camera one.jpg"
+    Image.new("RGB", (80, 60), color=(20, 80, 120)).save(image_path)
+
+    with TestClient(app) as client:
+        imported = client.post("/media/import", json={"paths": [str(image_path)]}).json()
+        media_id = imported["imported"][0]["id"]
+        dataset_id, class_id = _dataset_with_class(client, media_id)
+        created = client.post(
+            "/annotations",
+            json={
+                "dataset_id": dataset_id,
+                "media_asset_id": media_id,
+                "class_id": class_id,
+                "x": 0.1,
+                "y": 0.2,
+                "width": 0.3,
+                "height": 0.4,
+                "review_status": "confirmed",
+            },
+        )
+        assert created.status_code == 200
+
+        preview = client.get(f"/datasets/{dataset_id}/classes/{class_id}/delete-preview")
+        assert preview.status_code == 200
+        assert preview.json()["annotation_count"] == 1
+        assert preview.json()["affected_media_count"] == 1
+
+        deleted = client.delete(f"/datasets/{dataset_id}/classes/{class_id}")
+        assert deleted.status_code == 200
+        assert deleted.json()["deleted_annotations"] == 1
+        assert deleted.json()["affected_media_count"] == 1
+
+        listing = client.get(f"/media/{media_id}/annotations?dataset_id={dataset_id}")
+        assert listing.status_code == 200
+        assert listing.json()["annotations"] == []
+
+        detail = client.get(f"/datasets/{dataset_id}/media").json()
+        assert detail["classes"] == []
+        assert detail["stats"]["total_annotations"] == 0
+        assert detail["media"][0]["annotation_status"] == "unannotated"
+
+
+def test_delete_dataset_class_preserves_annotations_used_by_another_dataset(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANIMAL_WORKBENCH_HOME", str(tmp_path / "app-home"))
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    image_path = source_dir / "shared.jpg"
+    Image.new("RGB", (80, 60), color=(20, 80, 120)).save(image_path)
+
+    with TestClient(app) as client:
+        imported = client.post("/media/import", json={"paths": [str(image_path)]}).json()
+        media_id = imported["imported"][0]["id"]
+        first_dataset = client.post(
+            "/datasets",
+            json={"name": "first", "dataset_type": "user", "media_asset_ids": [media_id]},
+        ).json()
+        first_class = client.post(
+            f"/datasets/{first_dataset['id']}/classes",
+            json={"name": "共享标签"},
+        ).json()
+        second_dataset = client.post(
+            "/datasets",
+            json={"name": "second", "dataset_type": "user", "media_asset_ids": [media_id]},
+        ).json()
+        second_class = client.post(
+            f"/datasets/{second_dataset['id']}/classes",
+            json={"name": "共享标签"},
+        ).json()
+        assert second_class["id"] == first_class["id"]
+
+        created = client.post(
+            "/annotations",
+            json={
+                "dataset_id": first_dataset["id"],
+                "media_asset_id": media_id,
+                "class_id": first_class["id"],
+                "x": 0.1,
+                "y": 0.2,
+                "width": 0.3,
+                "height": 0.4,
+                "review_status": "confirmed",
+            },
+        )
+        assert created.status_code == 200
+
+        deleted = client.delete(f"/datasets/{first_dataset['id']}/classes/{first_class['id']}")
+        assert deleted.status_code == 200
+
+        first_detail = client.get(f"/datasets/{first_dataset['id']}/media").json()
+        assert first_detail["classes"] == []
+        assert first_detail["stats"]["total_annotations"] == 0
+
+        second_listing = client.get(f"/media/{media_id}/annotations?dataset_id={second_dataset['id']}")
+        assert second_listing.status_code == 200
+        assert len(second_listing.json()["annotations"]) == 1
 
 
 def test_annotation_rejects_out_of_bounds_box(tmp_path, monkeypatch):

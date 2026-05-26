@@ -287,7 +287,7 @@ def export_yolo_dataset(conn: sqlite3.Connection, job_id: int, paths: AppPaths |
 
     classes = conn.execute(
         """
-        SELECT cl.id, cl.display_name
+        SELECT cl.id, cl.name
         FROM dataset_classes dc
         JOIN classes cl ON cl.id = dc.class_id
         WHERE dc.dataset_id = ? AND cl.project_id = ?
@@ -362,7 +362,7 @@ def export_yolo_dataset(conn: sqlite3.Connection, job_id: int, paths: AppPaths |
     if export_cancelled:
         return yaml_path
 
-    names = [row["display_name"] for row in classes]
+    names = [row["name"] for row in classes]
     yaml_path.write_text(
         "\n".join(
             [

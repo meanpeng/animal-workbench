@@ -23,6 +23,7 @@ type AnnotationSidebarProps = {
   imageItems: MediaItem[];
   selectedMediaId: number | undefined;
   draftMediaIds: Set<number>;
+  draftBoxCounts: Map<number, number>;
   predictedMediaIds: Set<number>;
   predictionEmptyMediaIds: Set<number>;
   predictionFailedMediaIds: Set<number>;
@@ -51,6 +52,7 @@ export function AnnotationSidebar({
   imageItems,
   selectedMediaId,
   draftMediaIds,
+  draftBoxCounts,
   predictedMediaIds,
   predictionEmptyMediaIds,
   predictionFailedMediaIds,
@@ -63,11 +65,12 @@ export function AnnotationSidebar({
   onBack,
 }: AnnotationSidebarProps) {
   const mediaStatus = (item: MediaItem) => {
+    const draftCount = draftBoxCounts.get(item.id);
     if (predictionFailedMediaIds.has(item.id)) {
       return { className: "failed", label: "辅助标注失败，可切换图片后重试" };
     }
     if (draftMediaIds.has(item.id)) {
-      return { className: "draft", label: "有本地草稿，尚未保存" };
+      return { className: "draft", label: `有本地草稿，${draftCount ?? 0} 个框，尚未保存` };
     }
     if (predictedMediaIds.has(item.id)) {
       if (predictionEmptyMediaIds.has(item.id)) {
@@ -126,8 +129,11 @@ export function AnnotationSidebar({
           <>
             {imageItems.map((item) => {
               const status = mediaStatus(item);
-              const meta = predictionEmptyMediaIds.has(item.id)
-                ? "预测无框"
+              const draftCount = draftBoxCounts.get(item.id);
+              const meta = draftCount !== undefined
+                ? `${draftCount} 框`
+                : predictionEmptyMediaIds.has(item.id)
+                ? "0 框"
                 : item.annotation_count > 0
                   ? `${item.annotation_count} 框`
                   : item.annotation_status === "annotated"
@@ -142,7 +148,8 @@ export function AnnotationSidebar({
                 >
                   <span className="media-name">
                     <span className={`status-dot ${status.className}`} />
-                    <span className="media-id">{item.id}</span> {truncateName(item.original_name)}
+                    <span className="media-id">{item.id}</span>
+                    <span className="media-file-name">{truncateName(item.original_name)}</span>
                   </span>
                   <span className="media-meta">{meta}</span>
                 </button>

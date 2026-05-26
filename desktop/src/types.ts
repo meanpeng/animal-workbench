@@ -234,6 +234,12 @@ export type DatasetDetail = {
   total: number;
 };
 
+export type DatasetClassDeletePreview = {
+  class: ClassItem;
+  annotation_count: number;
+  affected_media_count: number;
+};
+
 export type ModelItem = {
   id: number;
   name: string;

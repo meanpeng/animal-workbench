@@ -15,10 +15,12 @@ DEFAULT_SETTINGS = {
     "enabled": False,
     "model_path": "",
     "confidence": 0.25,
-    "preload_radius": 3,
+    "preload_radius": 16,
     "image_size": 640,
     "device": "auto",
 }
+
+ASSISTED_BATCH_SIZES = {16, 32, 64}
 
 
 def assisted_annotation_settings(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -27,7 +29,8 @@ def assisted_annotation_settings(conn: sqlite3.Connection) -> dict[str, Any]:
     settings["enabled"] = bool(settings.get("enabled"))
     settings["model_path"] = str(settings.get("model_path") or "")
     settings["confidence"] = float(settings.get("confidence") or DEFAULT_SETTINGS["confidence"])
-    settings["preload_radius"] = int(settings.get("preload_radius") or DEFAULT_SETTINGS["preload_radius"])
+    preload_radius = int(settings.get("preload_radius") or DEFAULT_SETTINGS["preload_radius"])
+    settings["preload_radius"] = preload_radius if preload_radius in ASSISTED_BATCH_SIZES else DEFAULT_SETTINGS["preload_radius"]
     settings["image_size"] = int(settings.get("image_size") or DEFAULT_SETTINGS["image_size"])
     settings["device"] = str(settings.get("device") or DEFAULT_SETTINGS["device"])
     return settings
