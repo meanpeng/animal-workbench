@@ -231,6 +231,195 @@ def refresh_dataset_counts(conn: sqlite3.Connection, project_id: int, dataset_id
     )
 
 
+def query_dataset_media(
+    conn: sqlite3.Connection,
+    project_id: int,
+    dataset_id: int,
+    dataset: dict,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    search: str | None = None,
+    class_id: int | None = None,
+    annotation_status: str | None = None,
+    media_asset_id: int | None = None,
+) -> dict[str, Any]:
+    from ..repository import list_dataset_classes, rows_to_dicts
+
+    # -- stats --
+    stats_row = conn.execute(
+        """
+        SELECT
+            COUNT(DISTINCT da.media_asset_id) AS total_media,
+            COUNT(DISTINCT a.id) AS total_annotations,
+            COUNT(DISTINCT CASE WHEN a.id IS NOT NULL THEN da.media_asset_id END) AS annotated_media
+        FROM dataset_assets da
+        LEFT JOIN annotations a
+          ON a.media_asset_id = da.media_asset_id
+         AND a.project_id = ?
+         AND a.class_id IN (SELECT class_id FROM dataset_classes WHERE dataset_id = ?)
+        WHERE da.dataset_id = ?
+        """,
+        (project_id, dataset_id, dataset_id),
+    ).fetchone()
+
+    class_rows = conn.execute(
+        """
+        SELECT cl.name, cl.display_name, COUNT(a.id) AS cnt
+        FROM dataset_assets da
+        JOIN annotations a ON a.media_asset_id = da.media_asset_id AND a.project_id = ?
+        JOIN dataset_classes dc ON dc.dataset_id = ? AND dc.class_id = a.class_id
+        JOIN classes cl ON cl.id = a.class_id
+        WHERE da.dataset_id = ?
+        GROUP BY cl.id
+        ORDER BY cnt DESC
+        """,
+        (project_id, dataset_id, dataset_id),
+    ).fetchall()
+    class_counts = {row["display_name"]: row["cnt"] for row in class_rows}
+
+    # -- base query --
+    conditions = ["da.dataset_id = ?"]
+    params: list = [dataset_id]
+
+    if search:
+        conditions.append("ma.original_name LIKE ?")
+        params.append(f"%{search}%")
+
+    if media_asset_id is not None:
+        conditions.append("ma.id = ?")
+        params.append(media_asset_id)
+
+    if class_id is not None:
+        conditions.append(
+            """
+            EXISTS (
+                SELECT 1
+                FROM annotations a2
+                JOIN dataset_classes dc2 ON dc2.dataset_id = ? AND dc2.class_id = a2.class_id
+                WHERE a2.media_asset_id = ma.id AND a2.project_id = ? AND a2.class_id = ?
+            )
+            """
+        )
+        params.extend([dataset_id, project_id, class_id])
+
+    if annotation_status == "annotated":
+        conditions.append(
+            """
+            EXISTS (
+                SELECT 1
+                FROM annotations a2
+                JOIN dataset_classes dc2 ON dc2.dataset_id = ? AND dc2.class_id = a2.class_id
+                WHERE a2.media_asset_id = ma.id AND a2.project_id = ?
+            )
+            """
+        )
+        params.extend([dataset_id, project_id])
+    elif annotation_status == "unannotated":
+        conditions.append(
+            """
+            NOT EXISTS (
+                SELECT 1
+                FROM annotations a2
+                JOIN dataset_classes dc2 ON dc2.dataset_id = ? AND dc2.class_id = a2.class_id
+                WHERE a2.media_asset_id = ma.id AND a2.project_id = ?
+            )
+            """
+        )
+        params.extend([dataset_id, project_id])
+
+    where_clause = " AND ".join(conditions)
+
+    # -- count --
+    count_row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS cnt
+        FROM dataset_assets da
+        JOIN media_assets ma ON ma.id = da.media_asset_id
+        WHERE {where_clause} AND ma.project_id = ?
+        """,
+        [*params, project_id],
+    ).fetchone()
+    total = int(count_row["cnt"])
+
+    # -- paginated rows --
+    rows = rows_to_dicts(
+        conn.execute(
+            f"""
+            SELECT
+                ma.id, ma.media_type, ma.original_name,
+                ma.camera_site, ma.width, ma.height, ma.created_at
+            FROM dataset_assets da
+            JOIN media_assets ma ON ma.id = da.media_asset_id
+            WHERE {where_clause} AND ma.project_id = ?
+            ORDER BY ma.id ASC
+            LIMIT ? OFFSET ?
+            """,
+            [*params, project_id, limit, offset],
+        )
+    )
+
+    # -- batch queries for annotation counts and class names --
+    media_ids = [row["id"] for row in rows]
+    ann_count_map: dict[int, int] = {}
+    class_names_map: dict[int, list[str]] = {}
+    if media_ids:
+        placeholders = ",".join("?" for _ in media_ids)
+        ann_rows = conn.execute(
+            f"""
+            SELECT a.media_asset_id, COUNT(*) AS cnt
+            FROM annotations a
+            JOIN dataset_classes dc ON dc.dataset_id = ? AND dc.class_id = a.class_id
+            WHERE a.media_asset_id IN ({placeholders}) AND a.project_id = ?
+            GROUP BY a.media_asset_id
+            """,
+            [dataset_id, *media_ids, project_id],
+        ).fetchall()
+        for r in ann_rows:
+            ann_count_map[int(r["media_asset_id"])] = int(r["cnt"])
+
+        class_rows_for_media = conn.execute(
+            f"""
+            SELECT a.media_asset_id, cl.display_name
+            FROM annotations a
+            JOIN dataset_classes dc ON dc.dataset_id = ? AND dc.class_id = a.class_id
+            JOIN classes cl ON cl.id = a.class_id
+            WHERE a.media_asset_id IN ({placeholders}) AND a.project_id = ?
+            GROUP BY a.media_asset_id, cl.id
+            """,
+            [dataset_id, *media_ids, project_id],
+        ).fetchall()
+        for row2 in class_rows_for_media:
+            media_id = int(row2["media_asset_id"])
+            class_names_map.setdefault(media_id, []).append(row2["display_name"])
+
+    media_list = []
+    for row in rows:
+        media_list.append({
+            "id": row["id"],
+            "media_type": row["media_type"],
+            "original_name": row["original_name"],
+            "camera_site": row["camera_site"],
+            "width": row["width"],
+            "height": row["height"],
+            "annotation_count": ann_count_map.get(row["id"], 0),
+            "class_names": class_names_map.get(row["id"], []),
+        })
+
+    return {
+        "dataset": dict(dataset),
+        "classes": list_dataset_classes(conn, project_id, dataset_id),
+        "stats": {
+            "total_media": int(stats_row["total_media"]),
+            "annotated_media": int(stats_row["annotated_media"]),
+            "total_annotations": int(stats_row["total_annotations"]),
+            "class_counts": class_counts,
+        },
+        "media": media_list,
+        "total": total,
+    }
+
+
 def owned_media_ids(conn: sqlite3.Connection, project_id: int, media_asset_ids: list[int]) -> list[int]:
     unique_ids = list(dict.fromkeys(media_asset_ids))
     if not unique_ids:

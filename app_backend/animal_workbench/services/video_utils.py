@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import shutil
 import tempfile
 from pathlib import Path
 
 import cv2
 
 MAX_FRAMES = 60
+
+# Track temp dirs created when caller does not supply output_dir.
+# Callers must invoke cleanup_temp_dirs() after they are done with the frames.
+_temp_dirs: set[Path] = set()
+
+
+def cleanup_temp_dirs() -> None:
+    """Remove all temp directories created by extract_video_frames."""
+    while _temp_dirs:
+        d = _temp_dirs.pop()
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def extract_video_frames(
@@ -47,7 +59,11 @@ def extract_video_frames(
         if interval_frames < 1:
             interval_frames = 1
 
-        out_dir = output_dir or Path(tempfile.mkdtemp(prefix="video_frames_"))
+        if output_dir is not None:
+            out_dir = output_dir
+        else:
+            out_dir = Path(tempfile.mkdtemp(prefix="video_frames_"))
+            _temp_dirs.add(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
         name = base_name or video_path.stem

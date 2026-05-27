@@ -6,6 +6,9 @@ import { DataTable } from "../../components/DataTable";
 import { Select } from "../../components/Select";
 import type { ClassItem, Dataset, DatasetDetail, DatasetJob, DatasetMediaItem, PublicDataset } from "../../types";
 import { formatBeijingTime } from "../../utils";
+import { datasetStats, datasetTypeName } from "../../utils/dataset";
+import { sanitizeClassName } from "../../utils/classNames";
+import { EmptyLine } from "../../components/EmptyLine";
 
 export function DatasetsPanel({
   datasets,
@@ -39,6 +42,9 @@ export function DatasetsPanel({
 
   // ImportDataModal state
   const [importModalOpen, setImportModalOpen] = useState(false);
+
+  // Confirm modal state (replaces native confirm())
+  const [confirmModalOpen, setConfirmModalOpen] = useState(false);
 
   // "从已有数据集构建" state
   const [selectedDatasetIds, setSelectedDatasetIds] = useState<number[]>([]);
@@ -166,6 +172,7 @@ export function DatasetsPanel({
       setActiveJobId(job.id);
       setDatasetJobs((current) => [job, ...current.filter((item) => item.id !== job.id)].slice(0, 20));
       setMessage("文件夹导入任务已启动，完成后将自动关联到所选数据集");
+      setBusy(false);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "启动文件夹导入任务失败。");
       setBusy(false);
@@ -198,7 +205,6 @@ export function DatasetsPanel({
 
   // Clean up orphaned media (imported but not linked to any dataset)
   const handleCleanupOrphans = async () => {
-    if (!confirm("将删除所有未被数据集引用的媒体素材及其文件，确定继续？")) return;
     setBusy(true);
     setMessage("正在清理孤儿媒体...");
     try {
@@ -317,7 +323,7 @@ export function DatasetsPanel({
           <UploadCloud size={18} />
           <span>导入新数据</span>
         </button>
-        <button onClick={() => void handleCleanupOrphans()} disabled={busy || hasActiveJob} title="清理未被数据集引用的孤儿媒体文件">
+        <button onClick={() => setConfirmModalOpen(true)} disabled={busy || hasActiveJob} title="清理未被数据集引用的孤儿媒体文件">
           <Trash2 size={18} />
           <span>清理孤儿媒体</span>
         </button>
@@ -472,6 +478,24 @@ export function DatasetsPanel({
           emptyText="还没有数据集"
         />
       </section>
+
+      {/* Confirm modal for orphan cleanup */}
+      {confirmModalOpen ? (
+        <div className="modal-overlay" onClick={() => setConfirmModalOpen(false)}>
+          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>确认清理</h3>
+            <p style={{ color: "#64748b", margin: "0 0 16px", lineHeight: 1.6 }}>
+              将删除所有未被数据集引用的媒体素材及其文件，确定继续？
+            </p>
+            <div className="modal-actions">
+              <button onClick={() => setConfirmModalOpen(false)} disabled={busy}>取消</button>
+              <button className="primary danger" onClick={() => { setConfirmModalOpen(false); void handleCleanupOrphans(); }} disabled={busy}>
+                确认清理
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* ImportDataModal: unified dataset choice + data source */}
       <ImportDataModal
@@ -771,6 +795,7 @@ function DatasetDetailView({
   const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [classFilter, setClassFilter] = useState<number | undefined>(undefined);
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
   const [classes, setClasses] = useState<ClassItem[]>([]);
@@ -783,6 +808,12 @@ function DatasetDetailView({
   const [deleteError, setDeleteError] = useState("");
   const hasMore = mediaItems.length < total;
   const pageSize = 100;
+
+  // Debounce search input
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadingRef = useRef(false);
 
@@ -798,7 +829,7 @@ function DatasetDetailView({
       const result = await api.datasetMedia(datasetId, {
         limit: pageSize,
         offset: pageNum * pageSize,
-        search: search || undefined,
+        search: debouncedSearch || undefined,
         class_id: classFilter,
         annotation_status: statusFilter,
       });
@@ -818,7 +849,7 @@ function DatasetDetailView({
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [datasetId, pageSize, search, classFilter, statusFilter]);
+  }, [datasetId, pageSize, debouncedSearch, classFilter, statusFilter]);
 
   // Initial load + reload on filter/dataset change
   useEffect(() => {
@@ -864,12 +895,7 @@ function DatasetDetailView({
     setAddingClass(true);
     setAddClassError("");
     try {
-      let name = newClassDisplayName.trim().toLowerCase().replace(/\s+/g, "_");
-      // sanitize to ASCII-only: keep [A-Za-z0-9_.-], replace consecutive invalid chars with single '_'
-      name = name.replace(/[^a-z0-9_.-]+/g, "_").replace(/^_|_$/g, "").replace(/_{2,}/g, "_");
-      if (!name || !/^[A-Za-z0-9_.-]+$/.test(name)) {
-        name = "class_" + Date.now();
-      }
+      const name = sanitizeClassName(newClassDisplayName);
       const result = await api.createDatasetClass(datasetId, { name, display_name: newClassDisplayName.trim() });
       setNewClassDisplayName("");
       setAddClassOpen(false);
@@ -1070,33 +1096,4 @@ function jobTypeName(type: DatasetJob["job_type"]) {
   }[type];
 }
 
-function datasetStats(dataset: Dataset) {
-  try {
-    const stats = JSON.parse(dataset.sample_stats || "{}") as {
-      annotation_status?: string;
-      media_count?: number;
-      annotation_count?: number;
-      format?: string;
-    };
-    const status = stats.annotation_status === "unlabeled" ? "未标注" : stats.annotation_status === "labeled" ? "已标注" : `v${dataset.version}`;
-    if (stats.media_count !== undefined) {
-      return `${status} · ${stats.media_count} 素材 · ${stats.annotation_count ?? 0} 框`;
-    }
-    return status;
-  } catch {
-    return `v${dataset.version}`;
-  }
-}
-
-function datasetTypeName(type: Dataset["dataset_type"]) {
-  return {
-    public: "公开数据集",
-    user: "用户数据集",
-    fusion: "融合数据集",
-  }[type];
-}
-
-function EmptyLine({ text }: { text: string }) {
-  return <p className="empty-line">{text}</p>;
-}
 

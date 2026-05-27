@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from typing import Any
 
@@ -104,4 +105,5 @@ def json_loads(value: str | None, default: Any) -> Any:
     try:
         return json.loads(value)
     except json.JSONDecodeError:
+        logging.warning("json_loads: failed to parse value: %.200s", value)
         return default

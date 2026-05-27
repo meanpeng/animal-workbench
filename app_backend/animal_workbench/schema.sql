@@ -114,8 +114,8 @@ CREATE TABLE IF NOT EXISTS annotations (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY(media_asset_id) REFERENCES media_assets(id) ON DELETE CASCADE,
-  FOREIGN KEY(class_id) REFERENCES classes(id),
-  FOREIGN KEY(source_prediction_id) REFERENCES predictions(id)
+  FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE,
+  FOREIGN KEY(source_prediction_id) REFERENCES predictions(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS predictions (
@@ -133,8 +133,8 @@ CREATE TABLE IF NOT EXISTS predictions (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY(media_asset_id) REFERENCES media_assets(id) ON DELETE CASCADE,
-  FOREIGN KEY(model_id) REFERENCES models(id),
-  FOREIGN KEY(class_id) REFERENCES classes(id)
+  FOREIGN KEY(model_id) REFERENCES models(id) ON DELETE CASCADE,
+  FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS models (
@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS models (
   is_recommended INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY(source_experiment_id) REFERENCES experiments(id)
+  FOREIGN KEY(source_experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS training_jobs (
@@ -204,8 +204,8 @@ CREATE TABLE IF NOT EXISTS experiments (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY(training_job_id) REFERENCES training_jobs(id),
-  FOREIGN KEY(best_model_id) REFERENCES models(id),
-  FOREIGN KEY(last_model_id) REFERENCES models(id)
+  FOREIGN KEY(best_model_id) REFERENCES models(id) ON DELETE SET NULL,
+  FOREIGN KEY(last_model_id) REFERENCES models(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -220,3 +220,4 @@ CREATE INDEX IF NOT EXISTS idx_predictions_media ON predictions(media_asset_id);
 CREATE INDEX IF NOT EXISTS idx_training_project ON training_jobs(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_dataset_jobs_project ON dataset_jobs(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_dataset_classes_dataset ON dataset_classes(dataset_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_annotations_project_class ON annotations(project_id, class_id);

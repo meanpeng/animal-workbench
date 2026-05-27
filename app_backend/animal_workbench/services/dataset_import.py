@@ -1,20 +1,19 @@
 from __future__ import annotations
 
-import shutil
 import sqlite3
-import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
 from ..class_colors import class_color_for_index
-from ..config import AppPaths, get_paths
+from ..config import get_paths
 from ..repository import json_dumps
 from .datasets import add_media_to_dataset, bind_classes_to_dataset
 from .annotation_parsers import ParsedDataset, parse_dataset_folder
 from .dataset_jobs import JobReporter
-from .media import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, image_dimensions, iter_importable_files, sha256_file
-from .video_utils import extract_video_frames
+from .common import create_annotation_batch
+from .media import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, iter_importable_files
+from .video_utils import cleanup_temp_dirs, extract_video_frames
 
 
 def import_dataset_folder(
@@ -74,7 +73,7 @@ def _batch_register_media_assets(
     conn: sqlite3.Connection,
     project_id: int,
     items: list[tuple[Path, str]],
-    paths: AppPaths,
+    paths=None,
     reporter: JobReporter | None = None,
     *,
     progress_base: float = 15,
@@ -83,105 +82,11 @@ def _batch_register_media_assets(
     """并行计算哈希 + 复制文件，顺序写入数据库。返回 {source_path: asset_dict}。"""
     if not items:
         return {}
-
-    total = len(items)
-    workers = max(1, min(8, total))
-
-    # Phase 1: 并行计算 SHA256 哈希
-    def _hash(item: tuple[Path, str]) -> tuple[Path, str, str | None]:
-        path, kind = item
-        try:
-            return path, kind, sha256_file(path)
-        except Exception:
-            return path, kind, None
-
-    hashed: list[tuple[Path, str, str | None]] = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_hash, item): item for item in items}
-        done = 0
-        for future in as_completed(futures):
-            hashed.append(future.result())
-            done += 1
-            if reporter and (done % 20 == 0 or done == total):
-                reporter.update_on(
-                    conn, stage="hashing",
-                    percent=progress_base + progress_range * 0.3 * done / max(total, 1),
-                    current=done, total=total,
-                    message=f"已计算文件哈希 {done}/{total}",
-                )
-
-    # Phase 2: 查库去重（DB 读顺序执行，速度很快）
-    path_to_asset: dict[Path, dict[str, Any]] = {}
-    checksum_to_asset: dict[str, dict[str, Any]] = {}
-    to_prepare: list[tuple[Path, str, str]] = []
-
-    for path, source_kind, checksum in hashed:
-        if checksum is None:
-            continue
-        if checksum in checksum_to_asset:
-            path_to_asset[path] = checksum_to_asset[checksum]
-            continue
-        existing = conn.execute(
-            "SELECT * FROM media_assets WHERE project_id = ? AND checksum_sha256 = ?",
-            (project_id, checksum),
-        ).fetchone()
-        if existing:
-            asset = dict(existing)
-            checksum_to_asset[checksum] = asset
-            path_to_asset[path] = asset
-        else:
-            to_prepare.append((path, source_kind, checksum))
-
-    # Phase 3: 并行复制文件 + 获取尺寸
-    def _prepare(item: tuple[Path, str, str]) -> tuple[Path, str, str, str, int | None, int | None, str] | None:
-        path, source_kind, checksum = item
-        try:
-            suffix = path.suffix.lower()
-            width, height = image_dimensions(path)
-            storage_dir = paths.media_dir / checksum[:2] / checksum[2:4]
-            storage_dir.mkdir(parents=True, exist_ok=True)
-            internal_path = storage_dir / f"{uuid.uuid4().hex}{suffix}"
-            shutil.copy2(path, internal_path)
-            return path, source_kind, checksum, suffix, width, height, str(internal_path)
-        except Exception:
-            return None
-
-    prepared: list[tuple[Path, str, str, str, int | None, int | None, str]] = []
-    if to_prepare:
-        prep_total = len(to_prepare)
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_prepare, item): item for item in to_prepare}
-            done = 0
-            for future in as_completed(futures):
-                result = future.result()
-                if result is not None:
-                    prepared.append(result)
-                done += 1
-                if reporter and (done % 20 == 0 or done == prep_total):
-                    reporter.update_on(
-                        conn, stage="copying",
-                        percent=progress_base + progress_range * 0.5 + progress_range * 0.3 * done / max(prep_total, 1),
-                        current=done, total=prep_total,
-                        message=f"已复制文件 {done}/{prep_total}",
-                    )
-
-    # Phase 4: 顺序写入数据库
-    for path, source_kind, checksum, suffix, width, height, internal_path in prepared:
-        media_type = "image" if suffix in IMAGE_EXTENSIONS else "video"
-        cursor = conn.execute(
-            """
-            INSERT INTO media_assets(
-              project_id, media_type, original_name, source_kind,
-              width, height, checksum_sha256, internal_path
-            )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (project_id, media_type, path.name, source_kind, width, height, checksum, internal_path),
-        )
-        asset = dict(conn.execute("SELECT * FROM media_assets WHERE id = ?", (cursor.lastrowid,)).fetchone())
-        checksum_to_asset[checksum] = asset
-        path_to_asset[path] = asset
-
+    from .common import register_media_assets_batch
+    _imported, _skipped, _checksum_map, path_to_asset = register_media_assets_batch(
+        conn, project_id, items, paths, reporter,
+        progress_base=progress_base, progress_range=progress_range,
+    )
     return path_to_asset
 
 
@@ -252,6 +157,8 @@ def import_unlabeled_folder(
         progress_base=15, progress_range=55,
     )
     imported = [path_to_asset[path] for path in to_import if path in path_to_asset]
+
+    cleanup_temp_dirs()
 
     media_ids = [item["id"] for item in imported]
     if target_dataset and target_dataset.get("mode") == "existing":
@@ -412,50 +319,21 @@ def import_parsed_labeled_dataset(
     else:
         dataset = None
 
-    saved = 0
-    skipped_duplicate_annotations = 0
     if reporter:
         reporter.update_on(conn, stage="saving_annotations", percent=60, current=0, total=annotation_count, message="正在写入标注框")
-    for sample in valid_samples:
-        media_id = media_by_path[sample.image_path]["id"]
-        for box in sample.boxes:
-            class_id = class_ids.get(box.class_name)
-            if class_id is None:
-                continue
-            existing = conn.execute(
-                """
-                SELECT id
-                FROM annotations
-                WHERE project_id = ?
-                  AND media_asset_id = ?
-                  AND class_id = ?
-                  AND x = ?
-                  AND y = ?
-                  AND width = ?
-                  AND height = ?
-                """,
-                (project_id, media_id, class_id, box.x, box.y, box.width, box.height),
-            ).fetchone()
-            if existing:
-                skipped_duplicate_annotations += 1
-            else:
-                conn.execute(
-                    """
-                    INSERT INTO annotations(project_id, media_asset_id, class_id, x, y, width, height, review_status)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, 'confirmed')
-                    """,
-                    (project_id, media_id, class_id, box.x, box.y, box.width, box.height),
-                )
-                saved += 1
-            if reporter and (saved == annotation_count or saved % 100 == 0):
-                reporter.update_on(
-                    conn,
-                    stage="saving_annotations",
-                    percent=60 + 30 * saved / max(annotation_count, 1),
-                    current=saved,
-                    total=annotation_count,
-                    message=f"已写入 {saved}/{annotation_count} 个标注框",
-                )
+    from .common import batch_insert_annotations
+    saved, skipped_duplicate_annotations = batch_insert_annotations(
+        conn, project_id, valid_samples, class_ids, media_by_path,
+    )
+    if reporter:
+        reporter.update_on(
+            conn,
+            stage="saving_annotations",
+            percent=90,
+            current=saved,
+            total=annotation_count,
+            message=f"已写入 {saved}/{annotation_count} 个标注框",
+        )
     if dataset:
         bind_classes_to_dataset(conn, project_id, int(dataset["id"]), list(class_ids.values()))
         refresh_dataset_sample_stats(conn, project_id, int(dataset["id"]), parsed.format, "labeled")
@@ -471,42 +349,6 @@ def import_parsed_labeled_dataset(
         "class_count": len(class_ids),
         "format": parsed.format,
     }
-
-
-def register_media_asset(
-    conn: sqlite3.Connection,
-    project_id: int,
-    source_path: Path,
-    paths: AppPaths,
-    *,
-    source_kind: str,
-) -> dict[str, Any]:
-    checksum = sha256_file(source_path)
-    existing = conn.execute(
-        "SELECT * FROM media_assets WHERE project_id = ? AND checksum_sha256 = ?",
-        (project_id, checksum),
-    ).fetchone()
-    if existing:
-        return dict(existing)
-
-    suffix = source_path.suffix.lower()
-    media_type = "image" if suffix in IMAGE_EXTENSIONS else "video"
-    width, height = image_dimensions(source_path)
-    storage_dir = paths.media_dir / checksum[:2] / checksum[2:4]
-    storage_dir.mkdir(parents=True, exist_ok=True)
-    internal_path = storage_dir / f"{uuid.uuid4().hex}{suffix}"
-    shutil.copy2(source_path, internal_path)
-    cursor = conn.execute(
-        """
-        INSERT INTO media_assets(
-          project_id, media_type, original_name, source_kind,
-          width, height, checksum_sha256, internal_path
-        )
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (project_id, media_type, source_path.name, source_kind, width, height, checksum, str(internal_path)),
-    )
-    return dict(conn.execute("SELECT * FROM media_assets WHERE id = ?", (cursor.lastrowid,)).fetchone())
 
 
 def ensure_class(conn: sqlite3.Connection, project_id: int, class_name: str, sort_order: int) -> int:
@@ -616,19 +458,3 @@ def unique_dataset_name(conn: sqlite3.Connection, project_id: int, name: str) ->
         suffix += 1
 
 
-def create_annotation_batch(conn: sqlite3.Connection, project_id: int, name: str, media_asset_ids: list[int]) -> dict[str, Any] | None:
-    if not media_asset_ids:
-        return None
-    cursor = conn.execute(
-        """
-        INSERT INTO annotation_batches(project_id, name, status, total_items)
-        VALUES(?, ?, 'open', ?)
-        """,
-        (project_id, name, len(media_asset_ids)),
-    )
-    batch_id = int(cursor.lastrowid)
-    conn.executemany(
-        "INSERT OR IGNORE INTO annotation_batch_items(batch_id, media_asset_id) VALUES(?, ?)",
-        [(batch_id, media_id) for media_id in media_asset_ids],
-    )
-    return dict(conn.execute("SELECT * FROM annotation_batches WHERE id = ?", (batch_id,)).fetchone())
