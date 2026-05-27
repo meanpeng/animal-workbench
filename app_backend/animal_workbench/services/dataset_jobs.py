@@ -119,8 +119,9 @@ def update_dataset_job(
 
 
 class JobReporter:
-    def __init__(self, job_id: int):
+    def __init__(self, job_id: int, conn: sqlite3.Connection | None = None):
         self.job_id = job_id
+        self._conn = conn
 
     def update(
         self,
@@ -132,6 +133,17 @@ class JobReporter:
         message: str = "",
         log: str | None = None,
     ) -> None:
+        if self._conn is not None:
+            self.update_on(
+                self._conn,
+                stage=stage,
+                percent=percent,
+                current=current,
+                total=total,
+                message=message,
+                log=log,
+            )
+            return
         conn = connect()
         try:
             update_dataset_job(
@@ -172,6 +184,18 @@ class JobReporter:
         )
 
     def complete(self, summary: dict[str, Any], message: str = "任务完成") -> None:
+        if self._conn is not None:
+            update_dataset_job(
+                self._conn,
+                self.job_id,
+                status="completed",
+                stage="completed",
+                percent=100,
+                message=message,
+                result_summary=summary,
+                append_log=message,
+            )
+            return
         conn = connect()
         try:
             update_dataset_job(
@@ -189,6 +213,17 @@ class JobReporter:
 
     def fail(self, error: Exception) -> None:
         message = str(error)
+        if self._conn is not None:
+            update_dataset_job(
+                self._conn,
+                self.job_id,
+                status="failed",
+                stage="failed",
+                message=message,
+                error_message=message,
+                append_log=message,
+            )
+            return
         conn = connect()
         try:
             update_dataset_job(

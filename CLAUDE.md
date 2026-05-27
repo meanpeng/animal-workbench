@@ -29,9 +29,11 @@ workbench_app/
     pyproject.toml      Package config, dependencies, pytest settings
   desktop/              Tauri v2 + React/TypeScript frontend
     src/                React application
+      main.tsx          React entry point, mounts <App />
       App.tsx           Main app with sidebar navigation and 5 views
       api.ts            REST client for all backend endpoints
       types.ts          TypeScript type definitions
+      utils.ts          Utility functions (Beijing time formatting)
       styles.css        Application styles
       features/         Feature modules (datasets/DatasetsPanel, annotation/Annotate)
       components/       Shared components (DataTable, Select)
@@ -114,7 +116,7 @@ cargo check
 - **Backend runtime:** FastAPI, uvicorn, Pydantic, Pillow, OpenCV (headless), PyYAML, gdown, HuggingFace Hub, PyArrow
 - **Backend training (optional):** ultralytics (install with `pip install -e ".[train]"`)
 - **Backend dev:** pytest, httpx
-- **Frontend:** React 18, TypeScript, Vite, react-konva (canvas annotation), Lucide icons
+- **Frontend:** React 18, TypeScript, Vite, react-konva + konva (canvas annotation), Lucide icons, @tauri-apps/api
 - **Desktop:** Tauri v2, Rust
 
 Python >=3.11 required. Node and Rust toolchains required for the desktop shell.

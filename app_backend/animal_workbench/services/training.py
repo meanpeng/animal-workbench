@@ -66,6 +66,24 @@ def export_yolo_dataset(conn: sqlite3.Connection, job_id: int, paths: AppPaths |
         (job["dataset_id"],),
     ).fetchall()
 
+    # Batch-load all annotations for the dataset to avoid N+1 queries
+    media_ids = [row["media_id"] for row in rows]
+    annotations_by_media: dict[int, list[dict]] = {}
+    if media_ids:
+        placeholders = ",".join("?" for _ in media_ids)
+        ann_rows = conn.execute(
+            f"""
+            SELECT media_asset_id, class_id, x, y, width, height
+            FROM annotations
+            WHERE media_asset_id IN ({placeholders}) AND review_status IN ('draft', 'confirmed')
+            ORDER BY id
+            """,
+            media_ids,
+        ).fetchall()
+        for ann in ann_rows:
+            mid = int(ann["media_asset_id"])
+            annotations_by_media.setdefault(mid, []).append(dict(ann))
+
     for row in rows:
         split = row["split"] if row["split"] in {"train", "val", "test"} else "train"
         source = Path(row["internal_path"])
@@ -74,18 +92,9 @@ def export_yolo_dataset(conn: sqlite3.Connection, job_id: int, paths: AppPaths |
         if source.exists():
             shutil.copy2(source, image_target)
 
-        annotations = conn.execute(
-            """
-            SELECT class_id, x, y, width, height
-            FROM annotations
-            WHERE media_asset_id = ? AND review_status IN ('draft', 'confirmed')
-            ORDER BY id
-            """,
-            (row["media_id"],),
-        ).fetchall()
         label_target = export_root / "labels" / split / f"{Path(target_name).stem}.txt"
         with label_target.open("w", encoding="utf-8", newline="\n") as handle:
-            for annotation in annotations:
+            for annotation in annotations_by_media.get(row["media_id"], []):
                 if int(annotation["class_id"]) not in class_index:
                     continue
                 cx = float(annotation["x"]) + float(annotation["width"]) / 2

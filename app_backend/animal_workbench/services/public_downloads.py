@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import urllib.parse
 import urllib.request
@@ -25,7 +26,7 @@ def prepare_public_dataset(spec: PublicDatasetSpec, *, sample_limit: int | None,
         raise ValueError(f"未知公开数据集: {spec.key}")
 
     (root / "workbench_public_manifest.json").write_text(
-        '{"key":"%s","sample_limit":%s}\n' % (spec.key, sample_limit or "null"),
+        json.dumps({"key": spec.key, "sample_limit": sample_limit}, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     return {"key": spec.key, "name": spec.name, "path": str(root), "sample_limit": sample_limit}

@@ -24,6 +24,8 @@ import type {
 import { DatasetsPanel } from "./features/datasets/DatasetsPanel";
 import { Annotate } from "./features/annotation/Annotate";
 import { formatBeijingTime } from "./utils";
+import { EmptyLine } from "./components/EmptyLine";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 type View = "dashboard" | "datasets" | "annotate" | "training" | "results";
 
@@ -66,14 +68,14 @@ function App() {
       setBatches(nextBatches);
       setJobs(nextJobs);
       setModels(nextModels);
-    } catch { /* core refresh handles status */ }
+    } catch (error) { console.error("refreshDashboard failed:", error); }
   };
 
   const refreshTraining = async () => {
     try {
       const nextJobs = await api.jobs();
       setJobs(nextJobs);
-    } catch { /* ignore */ }
+    } catch (error) { console.error("refreshTraining failed:", error); }
   };
 
   const refreshResults = async () => {
@@ -81,7 +83,7 @@ function App() {
       const [nextModels, nextExperiments] = await Promise.all([api.models(), api.experiments()]);
       setModels(nextModels);
       setExperiments(nextExperiments);
-    } catch { /* ignore */ }
+    } catch (error) { console.error("refreshResults failed:", error); }
   };
 
   const refresh = async () => {
@@ -157,7 +159,7 @@ function App() {
 
         {view === "dashboard" && <Dashboard summary={summary} batches={batches} jobs={jobs} models={models} />}
         {view === "datasets" && <DatasetsPanel datasets={datasets} onRefresh={refresh} onClassCreated={() => { void refresh(); }} onSwitchToAnnotate={(datasetId, mediaId) => {annotateTargetRef.current = { datasetId, mediaId }; setView("annotate"); }} />}
-        {view === "annotate" && <Annotate datasets={datasets} initialDatasetId={annotateTargetRef.current?.datasetId ?? null} initialMediaId={annotateTargetRef.current?.mediaId ?? null} onTargetConsumed={() => { annotateTargetRef.current = null; }} />}
+        {view === "annotate" && <ErrorBoundary><Annotate datasets={datasets} initialDatasetId={annotateTargetRef.current?.datasetId ?? null} initialMediaId={annotateTargetRef.current?.mediaId ?? null} onTargetConsumed={() => { annotateTargetRef.current = null; }} /></ErrorBoundary>}
         {view === "training" && <Training datasets={datasets} jobs={jobs} onRefresh={refresh} />}
         {view === "results" && <Results models={models} experiments={experiments} />}
       </main>
@@ -419,10 +421,6 @@ function Metric({ label, value }: { label: string; value: number }) {
       <strong>{value.toLocaleString()}</strong>
     </section>
   );
-}
-
-function EmptyLine({ text }: { text: string }) {
-  return <p className="empty-line">{text}</p>;
 }
 
 export default App;
